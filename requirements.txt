@@ -1,0 +1,7 @@
+alpaca-py
+yfinance
+pandas
+python-dotenv
+pyyaml
+python-telegram-bot[job-queue]>=22,<23
+tzdata

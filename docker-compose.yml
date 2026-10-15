@@ -1,0 +1,12 @@
+services:
+  tradingbot:
+    build: .
+    container_name: tradingbot
+    restart: unless-stopped
+    # API keys and Telegram settings. Never copied into the image.
+    env_file: .env
+    volumes:
+      # Logs are written to ./logs on the host, so you can read them outside the container.
+      - ./logs:/app/logs
+      # Edit config.yaml on the host. The bot reads it again at every run, no rebuild needed.
+      - ./config.yaml:/app/config.yaml:ro

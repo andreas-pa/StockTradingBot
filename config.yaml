@@ -1,0 +1,35 @@
+# Trading bot settings. Edit these values to change what the bot trades.
+
+# Stock tickers to trade. The bot checks each one on every run.
+symbols:
+  - AAPL
+  - AMD
+  - AMZN
+  - AVGO
+  - BMY
+  - CVX
+  - GOOGL
+  - INTC
+  - JPM
+  - META
+  - MSFT
+  - MU
+  - NFLX
+  - NVDA
+  - ORCL
+  - PLTR
+  - SNDK
+  - TSLA
+  - V
+  - XOM
+
+# Moving average periods, in trading days. The short period must be smaller.
+short_window: 20
+long_window: 50
+
+# Number of shares to buy or sell on each signal, for every symbol.
+trade_size: 5
+
+# Number of past trading days to fetch from yfinance.
+# Must be greater than long_window.
+history_days: 100
