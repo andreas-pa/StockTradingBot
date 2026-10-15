@@ -185,6 +185,20 @@ Start the scheduled service with Telegram:
 .venv/bin/python main.py
 ```
 
+## Backtesting
+
+`backtest.py` replays the strategy on past daily prices, using the same crossover rule as the live bot. A signal on one day's close is executed at the next day's open. The backtest is long only, uses split- and dividend-adjusted prices, and ignores commissions and slippage.
+
+```bash
+.venv/bin/python backtest.py              # every symbol in config.yaml, last 10 years
+.venv/bin/python backtest.py --years 5    # a different period
+.venv/bin/python backtest.py AAPL MSFT    # only these symbols
+```
+
+For each symbol it reports the number of trades, win rate, average trade return, the strategy's total and yearly return, buy-and-hold return for comparison, maximum drawdown, and time in the market. It also saves the full results to `backtest_results.csv`.
+
+Past results do not predict future results. A list of today's largest companies also flatters any backtest, because it leaves out companies that shrank or failed over the same years.
+
 ## Disclaimer
 
 This project is for learning and paper trading. It is not financial advice. A moving average crossover is a simple strategy, and past signals do not predict future results.
