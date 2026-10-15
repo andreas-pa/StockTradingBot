@@ -3,24 +3,54 @@
 # Stock tickers to trade. The bot checks each one on every run.
 symbols:
   - AAPL
+  - ABBV
+  - AMAT
   - AMD
+  - AMGN
   - AMZN
+  - ANET
   - AVGO
+  - BAC
   - BMY
+  - CAT
+  - COST
+  - CRWD
+  - CSCO
   - CVX
+  - DELL
+  - GE
+  - GEV
   - GOOGL
+  - GS
+  - HD
   - INTC
+  - JNJ
   - JPM
+  - KO
+  - LLY
+  - LRCX
+  - MA
   - META
+  - MRK
+  - MS
   - MSFT
   - MU
   - NFLX
   - NVDA
   - ORCL
+  - PANW
+  - PG
   - PLTR
+  - PM
+  - RTX
   - SNDK
+  - TMO
   - TSLA
+  - TXN
+  - UNH
   - V
+  - WFC
+  - WMT
   - XOM
 
 # Moving average periods, in trading days. The short period must be smaller.
