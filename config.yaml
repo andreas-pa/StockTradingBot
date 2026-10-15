@@ -4,52 +4,22 @@
 symbols:
   - AAPL
   - ABBV
-  - AMAT
   - AMD
-  - AMGN
   - AMZN
-  - ANET
   - AVGO
-  - BAC
-  - BMY
-  - CAT
-  - COST
-  - CRWD
-  - CSCO
-  - CVX
-  - DELL
-  - GE
-  - GEV
   - GOOGL
-  - GS
-  - HD
   - INTC
   - JNJ
   - JPM
-  - KO
   - LLY
-  - LRCX
   - MA
   - META
-  - MRK
-  - MS
   - MSFT
   - MU
-  - NFLX
   - NVDA
-  - ORCL
-  - PANW
-  - PG
   - PLTR
-  - PM
-  - RTX
-  - SNDK
-  - TMO
   - TSLA
-  - TXN
-  - UNH
   - V
-  - WFC
   - WMT
   - XOM
 
@@ -58,7 +28,7 @@ short_window: 20
 long_window: 50
 
 # Number of shares to buy or sell on each signal, for every symbol.
-trade_size: 5
+trade_size: 10
 
 # Number of past trading days to fetch from yfinance.
 # Must be greater than long_window.
