@@ -20,6 +20,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, filters
 import bot
 import trader
 from strategy import BASE_DIR, MARKET_TZ
+from timezones import format_time
 
 RUN_TIME = time(9, 30, tzinfo=MARKET_TZ)
 STATUS_TIME = time(16, 5, tzinfo=MARKET_TZ)  # Daily status, 5 minutes after the close.
@@ -63,7 +64,7 @@ def pre(text):
 
 def format_summary(summary):
     title = "Dry run" if summary["dry_run"] else "Daily run"
-    lines = [f"{title} at {summary['started'][:16].replace('T', ' ')} ET"]
+    lines = [f"{title} at {format_time(datetime.fromisoformat(summary['started']))}"]
     for symbol, result in summary["results"].items():
         lines.append(f"{symbol:6} {result}")
     text = f"<b>{title} finished</b>\n" + pre("\n".join(lines))
@@ -106,7 +107,7 @@ def format_orders(orders, title):
         return f"No {title.lower()}."
     lines = []
     for o in orders:
-        when = (o.filled_at or o.submitted_at).astimezone(MARKET_TZ).strftime("%m-%d %H:%M")
+        when = format_time(o.filled_at or o.submitted_at, date_format="%m-%d")
         price = f"@ {float(o.filled_avg_price):.2f}" if o.filled_avg_price else ""
         lines.append(f"{when} {o.side.value:4} {o.qty:>4} {o.symbol:6} {o.status.value} {price}".rstrip())
     return f"<b>{title}</b>\n" + pre("\n".join(lines))
@@ -176,7 +177,7 @@ def next_run_text(job_queue):
     # Ask the schedule rule directly. job.next_t only exists after the
     # scheduler has started, and the startup message runs before that.
     next_run = jobs[0].job.trigger.get_next_fire_time(None, datetime.now(MARKET_TZ))
-    return next_run.astimezone(MARKET_TZ).strftime("%A %Y-%m-%d %H:%M ET")
+    return format_time(next_run, date_format="%A %Y-%m-%d")
 
 
 # ---------- Scheduled job ----------
@@ -219,7 +220,9 @@ async def watch_positions(context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.bot_data["positions"] = new
+    detected = format_time(datetime.now(MARKET_TZ), date_format="")
     for message in messages:
+        message += f"\nDetected at {detected}"
         log.info(message.replace("<b>", "").replace("</b>", "").replace("\n", " | "))
         await context.bot.send_message(context.job.chat_id, message, parse_mode=ParseMode.HTML)
 
@@ -243,6 +246,7 @@ async def daily_status(context: ContextTypes.DEFAULT_TYPE):
         )
         text = "\n".join([
             f"<b>Daily status for {now:%A %Y-%m-%d}</b>",
+            f"Sent at {format_time(now, date_format='')}",
             format_account(account),
             format_positions(positions),
             format_orders(fills, "Orders filled today"),

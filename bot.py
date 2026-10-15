@@ -18,6 +18,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import strategy
+import timezones
 import trader
 from strategy import BASE_DIR, MARKET_TZ
 
@@ -25,9 +26,17 @@ LOG_DIR = Path(os.getenv("LOG_DIR", BASE_DIR / "logs"))
 LAST_RUN_FILE = LOG_DIR / "last_run.json"
 
 log = logging.getLogger("bot")
-FORMATTER = logging.Formatter("%(asctime)s ET %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
-# Show log times in New York time, whatever the server's time zone is.
-FORMATTER.converter = lambda secs: datetime.fromtimestamp(secs, MARKET_TZ).timetuple()
+
+
+class TimeZoneFormatter(logging.Formatter):
+    """Show log times in New York time, plus local time when LOCAL_TIMEZONE is set."""
+
+    def formatTime(self, record, datefmt=None):
+        created = datetime.fromtimestamp(record.created, MARKET_TZ)
+        return timezones.format_time(created, time_format="%H:%M:%S")
+
+
+FORMATTER = TimeZoneFormatter("%(asctime)s %(levelname)-7s %(message)s")
 
 # Stops a Telegram /check from running at the same time as the scheduled run.
 _run_lock = threading.Lock()
@@ -45,6 +54,8 @@ def setup_logging():
 
     log.setLevel(logging.INFO)
     log.handlers = [console, service_file]
+    if timezones.local_tz_error():
+        log.warning(timezones.local_tz_error())
 
 
 def run_once(dry_run=False):

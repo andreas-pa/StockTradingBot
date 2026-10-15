@@ -33,6 +33,7 @@ The bot ignores today's unfinished price bar while the market is open. At the 9:
 | `trader.py` | Connects to Alpaca, places orders, reads the account |
 | `bot.py` | Runs one check of all symbols. Also works from the command line. |
 | `main.py` | Docker service: daily schedule, Telegram commands, alerts, and daily status |
+| `timezones.py` | Formats times in Eastern time plus your optional local time zone |
 | `.env.example` | Template for API keys and Telegram settings |
 | `Dockerfile`, `docker-compose.yml` | Container setup |
 
@@ -71,7 +72,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Open `.env` and fill in the four values:
+Open `.env` and fill in the four required values:
 
 ```
 APCA_API_KEY_ID=your_paper_key_id
@@ -79,6 +80,16 @@ APCA_API_SECRET_KEY=your_paper_secret_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
+
+### Local time zone (optional)
+
+All times are in US Eastern time (ET), the market's time zone. To also see your own time, set `LOCAL_TIMEZONE` in `.env` to a [time zone name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones):
+
+```
+LOCAL_TIMEZONE=Europe/Athens
+```
+
+Logs and Telegram messages then show both times, for example `2026-10-16 09:30 ET (16:30 EEST)`. Without this setting, they show Eastern time only. An unknown name logs a warning, and the bot shows Eastern time only.
 
 Start the bot:
 
@@ -133,7 +144,7 @@ Position alerts come from a check that compares your Alpaca positions every 60 s
 
 ## Logs
 
-Docker writes logs to the `logs/` folder on the host. All log times are in Eastern time.
+Docker writes logs to the `logs/` folder on the host. Log times are in Eastern time, followed by your local time when `LOCAL_TIMEZONE` is set.
 
 | File | Contents |
 |---|---|
