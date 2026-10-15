@@ -40,8 +40,11 @@ def crossover_signals(close, short_window, long_window):
     return signals
 
 
-def backtest_symbol(prices, short_window, long_window):
-    """Simulate the strategy on one symbol. Return a dict of results."""
+def backtest_symbol(prices, short_window, long_window, trade_size=1):
+    """Simulate the strategy on one symbol. Return a dict of results.
+
+    `trade_size` shares are bought on each buy, to report profit and loss in dollars.
+    """
     opens, closes = prices["Open"].to_numpy(), prices["Close"].to_numpy()
     dates = prices.index
     signals = crossover_signals(prices["Close"], short_window, long_window).to_numpy()
@@ -61,7 +64,10 @@ def backtest_symbol(prices, short_window, long_window):
             in_position, entry_price, entry_equity, entry_date = True, opens[i], equity, dates[i]
         elif signal == "sell" and in_position:
             trade_return = opens[i] / entry_price - 1
-            trades.append({"entry": entry_date, "exit": dates[i], "return": trade_return})
+            trades.append({
+                "entry": entry_date, "exit": dates[i], "return": trade_return,
+                "pnl": (opens[i] - entry_price) * trade_size,
+            })
             equity = entry_equity * (1 + trade_return)
             in_position = False
 
@@ -73,7 +79,10 @@ def backtest_symbol(prices, short_window, long_window):
 
     # Value a position that is still open at the last close.
     if in_position:
-        trades.append({"entry": entry_date, "exit": None, "return": closes[-1] / entry_price - 1})
+        trades.append({
+            "entry": entry_date, "exit": None, "return": closes[-1] / entry_price - 1,
+            "pnl": (closes[-1] - entry_price) * trade_size,
+        })
 
     days = len(closes) - start
     years = days / TRADING_DAYS_PER_YEAR
@@ -97,6 +106,8 @@ def backtest_symbol(prices, short_window, long_window):
         "max_drawdown": max_drawdown,
         "time_in_market": days_in_market / days,
         "open_now": in_position,
+        "pnl_dollars": sum(t["pnl"] for t in trades),
+        "position_cost_now": closes[-1] * trade_size,
     }
 
 
@@ -114,7 +125,7 @@ def pct(value, digits=0):
 def print_table(results):
     header = (
         f"{'Symbol':6} {'Years':>5} {'Trades':>6} {'Win':>5} {'Avg':>6} "
-        f"{'Strategy':>9} {'CAGR':>6} {'Buy&Hold':>9} {'CAGR':>6} {'MaxDD':>6} {'InMkt':>6} {'Now':>4}"
+        f"{'Strategy':>9} {'CAGR':>6} {'Buy&Hold':>9} {'CAGR':>6} {'MaxDD':>6} {'InMkt':>6} {'Now':>4} {'P/L $':>9}"
     )
     print(header)
     print("-" * len(header))
@@ -123,7 +134,7 @@ def print_table(results):
             f"{symbol:6} {r.years:>5.1f} {r.trades:>6.0f} {pct(r.win_rate):>5} {pct(r.avg_trade, 1):>6} "
             f"{pct(r.strategy_return):>9} {pct(r.strategy_cagr, 1):>6} {pct(r.buy_hold_return):>9} "
             f"{pct(r.buy_hold_cagr, 1):>6} {pct(r.max_drawdown):>6} {pct(r.time_in_market):>6} "
-            f"{'long' if r.open_now else '':>4}"
+            f"{'long' if r.open_now else '':>4} {r.pnl_dollars:>9,.0f}"
         )
 
 
@@ -135,13 +146,16 @@ def main():
 
     config = load_config()
     short_window, long_window = config["short_window"], config["long_window"]
+    trade_size = config["trade_size"]
     symbols = args.symbols or config["symbols"]
-    print(f"Backtesting {len(symbols)} symbols, {short_window}/{long_window}-day crossover, last {args.years} years\n")
+    print(f"Backtesting {len(symbols)} symbols, {short_window}/{long_window}-day crossover, "
+          f"{trade_size} shares per trade, last {args.years} years\n")
 
     rows, failed = {}, {}
     for symbol in symbols:
         try:
-            rows[symbol] = backtest_symbol(fetch_history(symbol, args.years), short_window, long_window)
+            prices = fetch_history(symbol, args.years)
+            rows[symbol] = backtest_symbol(prices, short_window, long_window, trade_size)
         except Exception as e:
             failed[symbol] = str(e)
 
@@ -154,6 +168,9 @@ def main():
     print(f"Median max drawdown: strategy {pct(results.max_drawdown.median())}")
     print(f"Total trades: {results.trades.sum():.0f}, overall win rate "
           f"{pct((results.win_rate * results.trades).sum() / results.trades.sum())}")
+    print(f"Total P/L with {trade_size} shares per trade: ${results.pnl_dollars.sum():,.0f}")
+    print(f"Cost of holding {trade_size} shares of every symbol at today's prices: "
+          f"${results.position_cost_now.sum():,.0f}")
     if (results.years < args.years - 0.5).any():
         short = results[results.years < args.years - 0.5]
         print("Shorter history: " + ", ".join(f"{s} ({y:.1f}y)" for s, y in short.years.items()))
@@ -164,6 +181,8 @@ def main():
     print(f"\nFull results saved to {RESULTS_FILE.name}")
     print("Columns: Win = winning trades, Avg = average trade return, CAGR = yearly growth rate,")
     print("MaxDD = largest drop from a peak, InMkt = time holding the stock, Now = position open today.")
+    print("P/L $ = dollar profit with a fixed share count. Adjusted prices make older trades")
+    print("look cheaper after stock splits, so P/L $ is mostly driven by recent years.")
 
 
 if __name__ == "__main__":
