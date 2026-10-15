@@ -1,0 +1,169 @@
+# Stock Trading Bot
+
+A trading bot that buys and sells US stocks on a moving average crossover signal. It trades on an [Alpaca](https://alpaca.markets) **paper trading** account, so all money is simulated.
+
+The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run to files on the host, and you can check its status from Telegram.
+
+## How it works
+
+1. The bot downloads the last 100 trading days of daily closing prices for each symbol from Yahoo Finance, using `yfinance`.
+2. It calculates a 20-day and a 50-day simple moving average.
+3. It compares the last two completed trading days:
+   - **BUY** when the 20-day average was at or below the 50-day average on the first day and above it on the second day.
+   - **SELL** when the 20-day average was at or above the 50-day average on the first day and below it on the second day.
+   - **No signal** when the averages did not cross.
+4. On a signal, it places a market order on Alpaca.
+
+The bot ignores today's unfinished price bar while the market is open. At the 9:30 run, signals therefore come from the previous day's close, and orders fill near the opening price.
+
+### Safety checks
+
+- Orders always go to the paper trading account. The code sets `paper=True` and has no live trading option.
+- The bot skips a buy if it already holds the stock, so a second run on the same day does not buy twice.
+- The bot never sells shares it does not hold, so it never opens a short position.
+- It skips weekends and US market holidays, using Alpaca's market calendar.
+- An error with one symbol, such as missing data or a rejected order, does not stop the run. The bot logs the error and moves to the next symbol.
+
+## Project files
+
+| File | Purpose |
+|---|---|
+| `config.yaml` | Symbols, moving average periods, trade size, history length |
+| `strategy.py` | Loads the config, downloads prices, detects crossovers |
+| `trader.py` | Connects to Alpaca, places orders, reads the account |
+| `bot.py` | Runs one check of all symbols. Also works from the command line. |
+| `main.py` | Docker service: daily schedule and Telegram commands |
+| `.env.example` | Template for API keys and Telegram settings |
+| `Dockerfile`, `docker-compose.yml` | Container setup |
+
+## Configuration
+
+Edit `config.yaml` to change what the bot trades:
+
+```yaml
+symbols:
+  - AAPL
+  - MSFT
+  # ...
+short_window: 20   # short moving average, in trading days
+long_window: 50    # long moving average, in trading days
+trade_size: 5      # shares per order, for every symbol
+history_days: 100  # trading days of price history to download
+```
+
+The bot reads this file again at every run. In Docker, the file is mounted from the host, so changes take effect without a rebuild.
+
+## Requirements
+
+- An Alpaca account with paper trading API keys. Find the keys at [app.alpaca.markets](https://app.alpaca.markets) under Paper Trading > API Keys.
+- A Telegram bot token. Message [@BotFather](https://t.me/BotFather) in Telegram and send `/newbot`.
+- Your Telegram chat ID. Message [@userinfobot](https://t.me/userinfobot) in Telegram to get it.
+- Docker with Docker Compose, on a machine that is on at 9:30 AM Eastern time.
+
+## Setup with Docker
+
+Clone the repo and create your `.env` file:
+
+```bash
+git clone git@github.com:kmgalanakis/StockTradingBot.git
+cd StockTradingBot
+cp .env.example .env
+chmod 600 .env
+```
+
+Open `.env` and fill in the four values:
+
+```
+APCA_API_KEY_ID=your_paper_key_id
+APCA_API_SECRET_KEY=your_paper_secret_key
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_CHAT_ID=your_telegram_chat_id
+```
+
+Start the bot:
+
+```bash
+docker compose up -d --build
+```
+
+Telegram sends you a "Trading bot started" message with the next run time. Send `/balance` to confirm that your Alpaca keys work.
+
+Docker restarts the container after a crash or a server reboot, because the compose file sets `restart: unless-stopped`.
+
+### Updating
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### Stopping
+
+```bash
+docker compose down
+```
+
+## Telegram commands
+
+The bot only answers messages from the chat ID in `.env`.
+
+| Command | Shows |
+|---|---|
+| `/status` | Open positions with profit and loss |
+| `/balance` | Equity, cash, buying power, and today's change |
+| `/orders` | Open orders |
+| `/trades` | Last 10 closed orders |
+| `/last` | Result of the last scheduled run |
+| `/check` | Signals right now, without placing orders |
+| `/next` | Time of the next scheduled run |
+| `/logs` | Last 25 lines of the bot log |
+| `/help` | List of commands |
+
+The bot also sends a message after every daily run, with the signals, orders, and any errors.
+
+## Logs
+
+Docker writes logs to the `logs/` folder on the host. All log times are in Eastern time.
+
+| File | Contents |
+|---|---|
+| `logs/runs/YYYY-MM-DD.log` | Everything one scheduled run did |
+| `logs/bot.log` | All activity, including dry runs and errors. Rotates at 5 MB. |
+| `logs/last_run.json` | Result of the last scheduled run, used by `/last` |
+
+To follow the container output live:
+
+```bash
+docker compose logs -f
+```
+
+## Running without Docker
+
+You need Python 3.9 or later.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Check for signals without placing orders:
+
+```bash
+.venv/bin/python bot.py --dry-run
+```
+
+Check for signals and place orders:
+
+```bash
+.venv/bin/python bot.py
+```
+
+Start the scheduled service with Telegram:
+
+```bash
+.venv/bin/python main.py
+```
+
+## Disclaimer
+
+This project is for learning and paper trading. It is not financial advice. A moving average crossover is a simple strategy, and past signals do not predict future results.
