@@ -30,37 +30,28 @@ def is_trading_day(client, day):
     return any(c.date == day for c in calendar)
 
 
-def held_quantity(client, symbol):
-    for position in client.get_all_positions():
-        if position.symbol == symbol:
-            return float(position.qty)
-    return 0.0
+def open_order_symbols(client):
+    """Return the symbols that have an unfilled order."""
+    return {o.symbol for o in client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))}
 
 
-def place_order(client, symbol, signal, trade_size):
-    """Place a market order for a signal. Return a short description of what happened."""
-    held = held_quantity(client, symbol)
-
-    # Skip a buy if we already hold shares, so a second run on the same day
-    # does not buy twice.
-    if signal == "buy" and held > 0:
-        message = f"Already holding {held:g} {symbol}. Skipped buy."
-        log.info(message)
-        return message
-    # Never sell shares we do not own. That would open a short position.
-    if signal == "sell" and held <= 0:
-        message = f"No {symbol} shares held. Skipped sell."
-        log.info(message)
-        return message
-
-    qty = trade_size if signal == "buy" else min(trade_size, held)
-    side = OrderSide.BUY if signal == "buy" else OrderSide.SELL
+def place_order(client, symbol, side, qty):
+    """Place a market order. Return a short description of what happened."""
     order = client.submit_order(
-        MarketOrderRequest(symbol=symbol, qty=qty, side=side, time_in_force=TimeInForce.DAY)
+        MarketOrderRequest(symbol=symbol, qty=qty, side=OrderSide(side), time_in_force=TimeInForce.DAY)
     )
-    message = f"Submitted {signal} order for {qty:g} {symbol}. Order id {order.id}, status {order.status.value}."
+    message = f"Submitted {side} order for {qty:g} {symbol}. Order id {order.id}, status {order.status.value}."
     log.info(message)
     return message
+
+
+def last_buy_fill_time(client, symbol):
+    """Return when the latest filled buy order for `symbol` filled, or None."""
+    request = GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[symbol], side=OrderSide.BUY, limit=10)
+    for order in client.get_orders(request):
+        if order.filled_at:
+            return order.filled_at
+    return None
 
 
 def get_open_orders(client):

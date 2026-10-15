@@ -27,9 +27,29 @@ symbols:
 short_window: 20
 long_window: 50
 
-# Number of shares to buy or sell on each signal, for every symbol.
+# When to buy and sell:
+#   crossover - buy only on the day the short average crosses above the long one,
+#               sell only on the day it crosses below.
+#   state     - hold whenever the short average is above the long one. Buys at the
+#               next run if not holding, so missed days are caught up.
+entry_mode: crossover
+
+# A signal only counts after it has held for this many days in a row. 1 = no wait.
+confirm_days: 1
+
+# A signal only counts when the averages differ by at least this percentage. 0 = off.
+min_gap_pct: 0
+
+# Sell when the price closes this percentage below its highest close since the buy. 0 = off.
+trailing_stop_pct: 0
+
+# Order size:
+#   shares  - buy trade_size shares on each buy
+#   dollars - buy as many whole shares as trade_dollars allows
+sizing: shares
 trade_size: 10
+trade_dollars: 1000
 
 # Number of past trading days to fetch from yfinance.
-# Must be greater than long_window.
+# Must be greater than long_window + confirm_days.
 history_days: 100

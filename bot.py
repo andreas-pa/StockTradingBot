@@ -24,6 +24,7 @@ from strategy import BASE_DIR, MARKET_TZ
 
 LOG_DIR = Path(os.getenv("LOG_DIR", BASE_DIR / "logs"))
 LAST_RUN_FILE = LOG_DIR / "last_run.json"
+STATE_FILE = LOG_DIR / "strategy_state.json"
 
 log = logging.getLogger("bot")
 
@@ -58,6 +59,47 @@ def setup_logging():
         log.warning(timezones.local_tz_error())
 
 
+def _connect(dry_run):
+    """Return (client, positions, symbols with open orders). Dry runs work without Alpaca keys."""
+    try:
+        client = trader.get_client()
+        return client, trader.positions_snapshot(client), trader.open_order_symbols(client)
+    except Exception as e:
+        if not dry_run:
+            raise
+        log.warning(f"Could not read Alpaca positions ({e}). Dry run assumes no positions.")
+        return None, {}, set()
+
+
+def _high_since_buy(client, symbol, held, ind):
+    """Return the highest close since the position was bought, including the buy price."""
+    high = held["entry"]
+    filled_at = trader.last_buy_fill_time(client, symbol) if client else None
+    if filled_at:
+        since = ind.close[ind.index.date >= filled_at.astimezone(MARKET_TZ).date()]
+        if not since.empty:
+            high = max(high, since.max())
+    return high
+
+
+def _buy_quantity(config, price):
+    if config["sizing"] == "dollars":
+        return float(int(config["trade_dollars"] // price))
+    return float(config["trade_size"])
+
+
+def _load_stopped():
+    """Symbols whose last exit was a trailing stop. Kept between runs in logs/strategy_state.json."""
+    try:
+        return set(json.loads(STATE_FILE.read_text())["stopped"])
+    except (FileNotFoundError, KeyError, ValueError):
+        return set()
+
+
+def _save_stopped(stopped):
+    STATE_FILE.write_text(json.dumps({"stopped": sorted(stopped)}, indent=2))
+
+
 def run_once(dry_run=False):
     """Check every symbol for a crossover and trade on signals. Return a summary dict."""
     with _run_lock:
@@ -85,44 +127,76 @@ def _run(dry_run):
     try:
         log.info(f"========== {'DRY RUN' if dry_run else 'LIVE RUN'} started ==========")
         config = strategy.load_config()
-        client = None
+        log.info(
+            f"Strategy: {config['short_window']}/{config['long_window']}-day, {config['entry_mode']} mode, "
+            f"confirm {config['confirm_days']} day(s), gap {config['min_gap_pct']:g}%, "
+            f"trailing stop {config['trailing_stop_pct']:g}%, sizing by {config['sizing']}"
+        )
+        client, positions, pending = _connect(dry_run)
+        stopped = _load_stopped()
 
         for symbol in config["symbols"]:
             log.info(f"----- {symbol} -----")
             try:
                 closes = strategy.fetch_prices(symbol, config["history_days"])
-                signal = strategy.find_crossover(closes, config["short_window"], config["long_window"])
+                ind = strategy.compute_indicators(closes, config)
+                strategy.log_indicators(ind, config)
+
+                held = positions.get(symbol)
+                position = {
+                    "holding": bool(held),
+                    "high": _high_since_buy(client, symbol, held, ind) if held else None,
+                    "stopped": symbol in stopped,
+                }
+                today = ind.iloc[-1]
+                if today.bearish:
+                    stopped.discard(symbol)
+                action, reason = strategy.decide(today, position, config)
             except Exception as e:
                 log.warning(f"Skipping {symbol}: {e}")
                 summary["results"][symbol] = "error"
                 summary["errors"].append(f"{symbol}: {e}")
                 continue
 
-            if signal is None:
-                log.info("No crossover.")
-                summary["results"][symbol] = "no signal"
+            if action is None:
+                log.info(reason.capitalize() + ".")
+                summary["results"][symbol] = reason
                 continue
 
-            log.info(f"Crossover found: {signal.upper()} signal.")
-            summary["results"][symbol] = signal.upper()
+            log.info(f"{action.upper()} signal: {reason}.")
+            summary["results"][symbol] = f"{action.upper()} ({reason})"
+            if symbol in pending:
+                log.info("An order for this symbol is still open. Skipping.")
+                summary["results"][symbol] += ", order already open"
+                continue
+
+            qty = held["qty"] if action == "sell" else _buy_quantity(config, today.close)
+            if qty <= 0:
+                log.info(f"trade_dollars is below one share at {today.close:.2f}. Skipping.")
+                summary["results"][symbol] += ", too expensive for trade_dollars"
+                continue
             if dry_run:
-                log.info("Dry run. No order placed.")
+                log.info(f"Dry run. Would {action} {qty:g} shares. No order placed.")
                 continue
 
             try:
-                # Connect to Alpaca only once, and only when there is an order to place.
-                if client is None:
-                    client = trader.get_client()
-                summary["orders"].append(trader.place_order(client, symbol, signal, config["trade_size"]))
+                summary["orders"].append(trader.place_order(client, symbol, action, qty))
+                if action == "sell" and reason.startswith("trailing stop"):
+                    stopped.add(symbol)
+                elif action == "buy":
+                    stopped.discard(symbol)
             except Exception as e:
                 log.error(f"Order for {symbol} failed: {e}")
-                summary["results"][symbol] = f"{signal.upper()} (order failed)"
+                summary["results"][symbol] += ", order failed"
                 summary["errors"].append(f"{symbol} order failed: {e}")
+
+        if not dry_run:
+            _save_stopped(stopped)
     except Exception as e:
         log.exception(f"Run failed: {e}")
         summary["errors"].append(f"Run failed: {e}")
     finally:
-        signals = {s: r for s, r in summary["results"].items() if r != "no signal"}
+        signals = {s: r for s, r in summary["results"].items() if r not in ("no signal", "holding")}
         log.info(f"Checked {len(summary['results'])} symbols. Signals and errors: {signals or 'none'}")
         log.info("========== Run finished ==========")
         if run_file:

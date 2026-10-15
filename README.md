@@ -8,11 +8,13 @@ The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run 
 
 1. The bot downloads the last 100 trading days of daily closing prices for each symbol from Yahoo Finance, using `yfinance`.
 2. It calculates a 20-day and a 50-day simple moving average.
-3. It compares the last two completed trading days:
+3. With the default settings, it compares the last two completed trading days:
    - **BUY** when the 20-day average was at or below the 50-day average on the first day and above it on the second day.
    - **SELL** when the 20-day average was at or above the 50-day average on the first day and below it on the second day.
    - **No signal** when the averages did not cross.
-4. On a signal, it places a market order on Alpaca.
+4. On a signal, it places a market order on Alpaca. A sell closes the whole position.
+
+Optional settings change these rules: hold whenever the trend is up instead of only on crossover days, wait for confirmation, require a minimum gap, add a trailing stop, or size orders in dollars. See [Strategy options](#strategy-options).
 
 The bot ignores today's unfinished price bar while the market is open. At the 9:30 run, signals therefore come from the previous day's close, and orders fill near the opening price.
 
@@ -20,6 +22,7 @@ The bot ignores today's unfinished price bar while the market is open. At the 9:
 
 - Orders always go to the paper trading account. The code sets `paper=True` and has no live trading option.
 - The bot skips a buy if it already holds the stock, so a second run on the same day does not buy twice.
+- It skips a symbol that still has an unfilled order.
 - The bot never sells shares it does not hold, so it never opens a short position.
 - It skips weekends and US market holidays, using Alpaca's market calendar.
 - An error with one symbol, such as missing data or a rejected order, does not stop the run. The bot logs the error and moves to the next symbol.
@@ -28,8 +31,9 @@ The bot ignores today's unfinished price bar while the market is open. At the 9:
 
 | File | Purpose |
 |---|---|
-| `config.yaml` | Symbols, moving average periods, trade size, history length |
-| `strategy.py` | Loads the config, downloads prices, detects crossovers |
+| `config.yaml` | Symbols, strategy settings, order size, history length |
+| `strategy.py` | Loads the config, downloads prices, and holds the trading rules shared by the bot and the backtest |
+| `backtest.py` | Replays the strategy on past prices and compares variants |
 | `trader.py` | Connects to Alpaca, places orders, reads the account |
 | `bot.py` | Runs one check of all symbols. Also works from the command line. |
 | `main.py` | Docker service: daily schedule, Telegram commands, alerts, and daily status |
@@ -48,11 +52,27 @@ symbols:
   # ...
 short_window: 20   # short moving average, in trading days
 long_window: 50    # long moving average, in trading days
-trade_size: 5      # shares per order, for every symbol
+sizing: shares     # shares or dollars
+trade_size: 10     # shares per buy, when sizing is shares
+trade_dollars: 1000  # dollars per buy, when sizing is dollars
 history_days: 100  # trading days of price history to download
 ```
 
 The bot reads this file again at every run. In Docker, the file is mounted from the host, so changes take effect without a rebuild.
+
+### Strategy options
+
+All options default to the original strategy. Change one at a time, and test it with the backtest first.
+
+| Setting | Values | Effect |
+|---|---|---|
+| `entry_mode` | `crossover` (default), `state` | `crossover` trades only on crossover days. `state` holds whenever the short average is above the long one, so the bot catches up after missed days. Switching to `state` buys every symbol in an uptrend at the next run. |
+| `confirm_days` | `1` (default) or more | A signal counts only after it has held this many days in a row |
+| `min_gap_pct` | `0` (default) or more | A signal counts only when the averages differ by at least this percentage |
+| `trailing_stop_pct` | `0` (default, off) or more | Sells when a close falls this percentage below the highest close since the buy. After a stop, the bot waits for a fresh crossover before buying that stock again. |
+| `sizing` | `shares` (default), `dollars` | Buy `trade_size` shares, or as many whole shares as `trade_dollars` allows |
+
+The trailing stop memory is kept in `logs/strategy_state.json`. Longer averages need more history: set `history_days` above `long_window + confirm_days`, for example 250 for a 200-day average.
 
 ## Requirements
 
@@ -187,15 +207,18 @@ Start the scheduled service with Telegram:
 
 ## Backtesting
 
-`backtest.py` replays the strategy on past daily prices, using the same crossover rule as the live bot. A signal on one day's close is executed at the next day's open. The backtest is long only, uses split- and dividend-adjusted prices, and ignores commissions and slippage.
+`backtest.py` replays the strategy on past daily prices. It uses the same rule code as the live bot, in `strategy.py`, so the two cannot drift apart. A signal on one day's close is executed at the next day's open. The backtest is long only, uses split- and dividend-adjusted prices, and ignores commissions and slippage.
 
 ```bash
-.venv/bin/python backtest.py              # every symbol in config.yaml, last 10 years
+.venv/bin/python backtest.py              # config.yaml settings, every symbol, last 10 years
 .venv/bin/python backtest.py --years 5    # a different period
 .venv/bin/python backtest.py AAPL MSFT    # only these symbols
+.venv/bin/python backtest.py --compare    # compare strategy variants
 ```
 
-For each symbol it reports the number of trades, win rate, average trade return, the strategy's total and yearly return, buy-and-hold return for comparison, maximum drawdown, and time in the market. It also saves the full results to `backtest_results.csv`.
+For each symbol it reports the number of trades, win rate, average trade return, the strategy's total and yearly return, buy-and-hold return for comparison, maximum drawdown, time in the market, and dollar profit and loss. It also saves the full results to `backtest_results.csv`.
+
+`--compare` tests variants that each change one setting of `config.yaml`: state mode, 50/200-day averages, 2-day confirmation, a 1% minimum gap, and a 15% trailing stop. It runs each one over the full period, before 2022, and from 2022, and compares them with buy and hold. A variant that only does well in one period is probably fit to that period.
 
 Past results do not predict future results. A list of today's largest companies also flatters any backtest, because it leaves out companies that shrank or failed over the same years.
 
