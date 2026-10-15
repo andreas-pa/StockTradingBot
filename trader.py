@@ -69,3 +69,25 @@ def get_open_orders(client):
 
 def get_recent_orders(client, limit=10):
     return client.get_orders(GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=limit))
+
+
+def get_filled_orders_since(client, since):
+    orders = client.get_orders(GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=since, limit=500))
+    return [o for o in orders if o.filled_at]
+
+
+def positions_snapshot(client):
+    """Return {symbol: {"qty": shares, "entry": average entry price}} for every open position."""
+    return {
+        p.symbol: {"qty": float(p.qty), "entry": float(p.avg_entry_price)}
+        for p in client.get_all_positions()
+    }
+
+
+def last_fill_price(client, symbol, side):
+    """Return the average fill price of the latest filled `side` order for `symbol`, or None."""
+    request = GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[symbol], side=OrderSide(side), limit=10)
+    for order in client.get_orders(request):
+        if order.filled_avg_price:
+            return float(order.filled_avg_price)
+    return None

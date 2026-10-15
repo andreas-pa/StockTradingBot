@@ -2,7 +2,7 @@
 
 A trading bot that buys and sells US stocks on a moving average crossover signal. It trades on an [Alpaca](https://alpaca.markets) **paper trading** account, so all money is simulated.
 
-The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run to files on the host, and you can check its status from Telegram.
+The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run to files on the host. Telegram sends you a daily status and an alert for every opened or closed position, and you can check the bot's status there at any time.
 
 ## How it works
 
@@ -32,7 +32,7 @@ The bot ignores today's unfinished price bar while the market is open. At the 9:
 | `strategy.py` | Loads the config, downloads prices, detects crossovers |
 | `trader.py` | Connects to Alpaca, places orders, reads the account |
 | `bot.py` | Runs one check of all symbols. Also works from the command line. |
-| `main.py` | Docker service: daily schedule and Telegram commands |
+| `main.py` | Docker service: daily schedule, Telegram commands, alerts, and daily status |
 | `.env.example` | Template for API keys and Telegram settings |
 | `Dockerfile`, `docker-compose.yml` | Container setup |
 
@@ -119,7 +119,17 @@ The bot only answers messages from the chat ID in `.env`.
 | `/logs` | Last 25 lines of the bot log |
 | `/help` | List of commands |
 
-The bot also sends a message after every daily run, with the signals, orders, and any errors.
+The commands also appear in the menu next to the message box in Telegram. The bot sets this menu at startup, and only your chat sees it.
+
+### Automatic messages
+
+| Message | When |
+|---|---|
+| Daily run result | After the 9:30 ET run: signals, orders placed, and errors |
+| Position alert | Within about a minute of a position opening, closing, growing, or shrinking. Closing and shrinking alerts include the fill price and the profit or loss. |
+| Daily status | 16:05 ET on trading days: account value, open positions, and orders filled that day |
+
+Position alerts come from a check that compares your Alpaca positions every 60 seconds. They also cover trades you place by hand in the Alpaca dashboard. Changes that happen while the bot is stopped are not reported after a restart.
 
 ## Logs
 
