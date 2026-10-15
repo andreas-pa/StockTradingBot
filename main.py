@@ -98,6 +98,16 @@ def format_orders(orders, title):
     return f"<b>{title}</b>\n" + pre("\n".join(lines))
 
 
+def next_run_text(job_queue):
+    jobs = job_queue.get_jobs_by_name(JOB_NAME)
+    if not jobs:
+        return None
+    # Ask the schedule rule directly. job.next_t only exists after the
+    # scheduler has started, and the startup message runs before that.
+    next_run = jobs[0].job.trigger.get_next_fire_time(None, datetime.now(MARKET_TZ))
+    return next_run.astimezone(MARKET_TZ).strftime("%A %Y-%m-%d %H:%M ET")
+
+
 # ---------- Scheduled job ----------
 
 async def daily_run(context: ContextTypes.DEFAULT_TYPE):
@@ -161,11 +171,10 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jobs = context.job_queue.get_jobs_by_name(JOB_NAME)
-    if not jobs or not jobs[0].next_t:
+    next_run = next_run_text(context.job_queue)
+    if not next_run:
         await reply(update, "No run is scheduled.")
         return
-    next_run = jobs[0].next_t.astimezone(MARKET_TZ).strftime("%A %Y-%m-%d %H:%M ET")
     await reply(update, f"Next scheduled run: {next_run}\nHolidays are skipped when the day comes.")
 
 
@@ -198,8 +207,7 @@ def main():
     chat_id = int(chat_id)
 
     async def on_startup(app: Application):
-        job = app.job_queue.get_jobs_by_name(JOB_NAME)[0]
-        next_run = job.next_t.astimezone(MARKET_TZ).strftime("%A %Y-%m-%d %H:%M ET")
+        next_run = next_run_text(app.job_queue)
         log.info(f"Service started. Next run: {next_run}")
         await app.bot.send_message(chat_id, f"Trading bot started.\nNext run: {next_run}\nSend /help for commands.")
 
