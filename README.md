@@ -86,7 +86,7 @@ The trailing stop memory is kept in `logs/strategy_state.json`. Longer averages 
 Clone the repo and create your `.env` file:
 
 ```bash
-git clone git@github.com:kmgalanakis/StockTradingBot.git
+git clone https://github.com/kmgalanakis/StockTradingBot.git
 cd StockTradingBot
 cp .env.example .env
 chmod 600 .env
@@ -171,6 +171,7 @@ Docker writes logs to the `logs/` folder on the host. Log times are in Eastern t
 | `logs/runs/YYYY-MM-DD.log` | Everything one scheduled run did |
 | `logs/bot.log` | All activity, including dry runs and errors. Rotates at 5 MB. |
 | `logs/last_run.json` | Result of the last scheduled run, used by `/last` |
+| `logs/strategy_state.json` | Symbols sold by a trailing stop, so the bot does not buy them straight back |
 
 To follow the container output live:
 
@@ -192,6 +193,8 @@ Check for signals without placing orders:
 ```bash
 .venv/bin/python bot.py --dry-run
 ```
+
+A dry run reads your Alpaca positions, to decide between buying, holding, and selling. Without Alpaca keys in `.env`, it logs a warning and assumes you hold nothing.
 
 Check for signals and place orders:
 
