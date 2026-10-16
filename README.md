@@ -236,17 +236,21 @@ Past results do not predict future results. A list of today's largest companies 
 
 ### Alternative strategies
 
-`research.py` tests two other kinds of strategy, measured the same way: cash interest, Sharpe ratio, drawdown, declines, and an early and a late period. The live bot does not use them.
+`research.py` tests three other kinds of strategy, measured the same way: cash interest, Sharpe ratio, drawdown, declines, and an early and a late period. The live bot does not use them.
 
 ```bash
 .venv/bin/python research.py market-trend             # SPY, 200-day average, 20 years
 .venv/bin/python research.py market-trend --symbol QQQ --average 150
 .venv/bin/python research.py momentum                 # nine sector funds, top 3, 20 years
 .venv/bin/python research.py momentum --universe config --top 5 --years 10
+.venv/bin/python research.py asset-trend              # SPY EFA IEF GLD DBC, 10-month average
+.venv/bin/python research.py asset-trend --months 12
 ```
 
 - **Market trend** holds one index fund while it closes above its long-term average, and holds cash otherwise. It uses the live bot's rule code, with a 1-day short average in state mode.
 - **Momentum** ranks a list of symbols at the end of each month by their return over the past 12 months, skipping the most recent month. It holds the top few in equal amounts until the next month. The comparison is an equal amount in every symbol, rebalanced monthly.
+
+- **Multi-asset trend** splits money equally across five funds: US stocks (SPY), developed-market stocks outside the US (EFA), US government bonds (IEF), gold (GLD), and commodities (DBC). At each month end, a fund's share is invested while it closes above its 10-month average, and held in cash otherwise. The comparisons are the same five funds in equal amounts, and buy and hold of SPY. The test starts when all five funds have data, in 2006.
 
 The default momentum universe is nine S&P 500 sector funds that have traded since 1998. Their list is the same in every year, so the test avoids the hindsight bias of using today's largest companies. Add `--split-year` to choose where the second period starts.
 

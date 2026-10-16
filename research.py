@@ -1,4 +1,4 @@
-"""Backtests of two alternative strategies, measured the same way as backtest.py.
+"""Backtests of alternative strategies, measured the same way as backtest.py.
 
 market-trend: hold one index fund (SPY by default) while it closes above its
     long-term average, and hold cash otherwise. Signals are decided on a close
@@ -8,6 +8,9 @@ momentum: at the end of each month, rank a list of symbols by their return over
     the past months, then hold the top few in equal amounts until the next month.
     The comparison is an equal amount in every symbol, rebalanced monthly.
 
+asset-trend: equal shares of stock, bond, gold, and commodity funds. At each month end,
+    a fund's share is invested while it closes above its 10-month average, else cash.
+
 Cash earns the 13-week Treasury bill rate. Prices are split- and dividend-adjusted.
 Commissions and slippage are not modeled.
 
@@ -16,6 +19,7 @@ Usage:
     python research.py market-trend --symbol QQQ --average 150 --years 15
     python research.py momentum                           # nine sector funds, top 3, 20 years
     python research.py momentum --universe config --top 5 --years 10
+    python research.py asset-trend                        # SPY EFA IEF GLD DBC, 10-month average
 """
 
 import argparse
@@ -29,6 +33,8 @@ from strategy import compute_indicators, load_config, validate
 # The nine S&P 500 sector funds that trade since 1998. Real estate (XLRE, 2015) and
 # communication services (XLC, 2018) are left out so the list is the same in every year.
 SECTOR_FUNDS = ["XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY"]
+# US stocks, developed-market stocks outside the US, US government bonds, gold, commodities.
+ASSET_FUNDS = ["SPY", "EFA", "IEF", "GLD", "DBC"]
 TRADING_DAYS_PER_MONTH = 21
 
 
@@ -106,6 +112,69 @@ def run_market_trend(symbol, average, years, split_year):
           f"{average}-day average {ind['long_ma'].iloc[-1]:.2f}.")
 
 
+# ---------- Monthly rebalancing ----------
+
+class MonthlyPortfolio:
+    """Rebalance a portfolio of funds or stocks once a month.
+
+    Weights are decided on the last trading day of a month and traded at the next open.
+    Money not given a weight stays in cash and earns interest.
+    """
+
+    def __init__(self, opens, closes, cash, first_decision):
+        self.dates = closes.index
+        self.symbols = list(closes.columns)
+        self.o = opens.to_numpy()
+        self.c = closes.ffill().to_numpy()  # ffill: value a holding on a rare missing day
+        self.raw_close = closes.to_numpy()
+        self.cash = cash
+        self.month_ends = [i for i in range(len(self.dates) - 1) if self.dates[i].month != self.dates[i + 1].month]
+        # execution day -> decision day
+        self.rebalance_days = {i + 1: i for i in self.month_ends if i >= first_decision}
+        if not self.rebalance_days:
+            raise ValueError("Not enough history.")
+        self.start = min(self.rebalance_days)
+
+    def available(self, d, i):
+        """Symbol columns with a close on the decision day and an open on the execution day."""
+        return [k for k in range(len(self.symbols))
+                if not math.isnan(self.raw_close[d, k]) and not math.isnan(self.o[i, k])]
+
+    def run(self, weights):
+        """`weights(d, i)` returns {column: share of money}. Returns ((curve, invested, buys), log)."""
+        o, c = self.o, self.c
+        cash_balance, shares, held = 1.0, {}, set()
+        curve, invested, buys, log = [], [], [], []
+        for i in range(self.start, len(self.dates)):
+            bought = 0
+            if i in self.rebalance_days:
+                value = cash_balance + sum(n * o[i, k] for k, n in shares.items())
+                target = {k: w for k, w in weights(self.rebalance_days[i], i).items() if w > 0}
+                bought = len(set(target) - held)
+                shares = {k: value * w / o[i, k] for k, w in target.items()}
+                cash_balance = value * (1 - sum(target.values()))
+                held = set(target)
+                log.append((self.dates[i], sorted(self.symbols[k] for k in target)))
+            cash_balance *= 1 + self.cash[i]
+            stock_value = sum(n * c[i, k] for k, n in shares.items())
+            total = cash_balance + stock_value
+            curve.append(total)
+            invested.append(stock_value / total if total else 0)
+            buys.append(bought)
+        return (curve, invested, buys), log
+
+    def equal_weight(self, d, i):
+        chosen = self.available(d, i)
+        return {k: 1 / len(chosen) for k in chosen}
+
+
+def load_prices(symbols, years):
+    data = {s: fetch_history(s, years) for s in symbols}
+    opens = pd.DataFrame({s: d["Open"] for s, d in data.items()}).sort_index()
+    closes = pd.DataFrame({s: d["Close"] for s, d in data.items()}).sort_index()
+    return opens, closes
+
+
 # ---------- Momentum ----------
 
 def momentum_curves(opens, closes, cash, lookback, skip, top):
@@ -115,60 +184,75 @@ def momentum_curves(opens, closes, cash, lookback, skip, top):
     Returns (dates, momentum, equal weight, holdings log). Each strategy is a tuple of
     (curve, invested share, buys per day).
     """
-    dates = closes.index
-    symbols = list(closes.columns)
-    o, c = opens.to_numpy(), closes.ffill().to_numpy()  # ffill: value a holding on a rare missing day
-    raw_close = closes.to_numpy()
-    month_end = [i for i in range(len(dates) - 1) if dates[i].month != dates[i + 1].month]
-    first = lookback * TRADING_DAYS_PER_MONTH
-    rebalance_days = {i + 1: i for i in month_end if i >= first}  # execution day -> decision day
-    if not rebalance_days:
-        raise ValueError("Not enough history for the lookback period.")
-    start = min(rebalance_days)
-
-    def run(pick):
-        cash_balance, shares, held = 1.0, {}, set()
-        curve, invested, buys, log = [], [], [], []
-        for i in range(start, len(dates)):
-            bought = 0
-            if i in rebalance_days:
-                d = rebalance_days[i]
-                value = cash_balance + sum(n * o[i, k] for k, n in shares.items())
-                choice = pick(d, i)
-                bought = len(set(choice) - held)
-                shares = {k: value / len(choice) / o[i, k] for k in choice} if choice else {}
-                cash_balance = 0.0 if choice else value
-                held = set(choice)
-                log.append((dates[i], sorted(symbols[k] for k in choice)))
-            cash_balance *= 1 + cash[i]
-            stock_value = sum(n * c[i, k] for k, n in shares.items())
-            total = cash_balance + stock_value
-            curve.append(total)
-            invested.append(stock_value / total if total else 0)
-            buys.append(bought)
-        return (curve, invested, buys), log
-
-    def available(d, i):
-        """Symbols with a close on the decision day and an open on the execution day."""
-        return [k for k in range(len(symbols)) if not math.isnan(raw_close[d, k]) and not math.isnan(o[i, k])]
+    pf = MonthlyPortfolio(opens, closes, cash, lookback * TRADING_DAYS_PER_MONTH)
 
     def top_momentum(d, i):
-        past = raw_close[d - lookback * TRADING_DAYS_PER_MONTH]
-        recent = raw_close[d - skip * TRADING_DAYS_PER_MONTH]
-        scores = {k: recent[k] / past[k] - 1 for k in available(d, i)
+        past = pf.raw_close[d - lookback * TRADING_DAYS_PER_MONTH]
+        recent = pf.raw_close[d - skip * TRADING_DAYS_PER_MONTH]
+        scores = {k: recent[k] / past[k] - 1 for k in pf.available(d, i)
                   if not math.isnan(past[k]) and not math.isnan(recent[k])}
-        return sorted(scores, key=scores.get, reverse=True)[:top]
+        best = sorted(scores, key=scores.get, reverse=True)[:top]
+        return {k: 1 / len(best) for k in best}
 
-    momentum, log = run(top_momentum)
-    equal, _ = run(available)
-    return dates[start:], momentum, equal, log
+    momentum, log = pf.run(top_momentum)
+    equal, _ = pf.run(pf.equal_weight)
+    return pf.dates[pf.start:], momentum, equal, log
+
+
+# ---------- Multi-asset trend ----------
+
+def asset_trend_curves(opens, closes, cash, months, benchmark):
+    """Simulate multi-asset trend following and its comparisons.
+
+    Each fund gets an equal share of the money. At each month end, a fund's share is
+    invested if its close is above the average of its last `months` month-end closes,
+    and held in cash otherwise. Prices must start on a day when every fund has data.
+    Returns (dates, {name: (curve, invested, buys)}, holdings log).
+    """
+    month_ends = [i for i in range(len(closes) - 1) if closes.index[i].month != closes.index[i + 1].month]
+    if len(month_ends) <= months:
+        raise ValueError("Not enough history for the average.")
+    pf = MonthlyPortfolio(opens, closes, cash, month_ends[months - 1])
+    share = 1 / len(pf.symbols)
+
+    def trend(d, i):
+        recent = [m for m in pf.month_ends if m <= d][-months:]
+        weights = {}
+        for k in pf.available(d, i):
+            average = pf.raw_close[recent, k].mean()
+            if pf.raw_close[d, k] > average:
+                weights[k] = share
+        return weights
+
+    bench = pf.symbols.index(benchmark)
+    trend_result, log = pf.run(trend)
+    curves = {
+        f"Trend, {len(pf.symbols)} funds": trend_result,
+        f"Equal weight, {len(pf.symbols)} funds": pf.run(pf.equal_weight)[0],
+        f"Buy and hold {benchmark}": pf.run(lambda d, i: {bench: 1.0})[0],
+    }
+    return pf.dates[pf.start:], curves, log
+
+
+def run_asset_trend(funds, months, years, split_year):
+    opens, closes = load_prices(funds, years)
+    # Start when every fund has data, so the test always holds the same list.
+    first_day = max(closes[f].first_valid_index() for f in funds)
+    opens, closes = opens.loc[first_day:], closes.loc[first_day:]
+    cash = cash_rates(closes.index)
+
+    dates, curves, log = asset_trend_curves(opens, closes, cash, months, funds[0])
+    period_cash = list(cash[len(closes) - len(dates):])
+
+    print(f"Multi-asset trend: equal shares of {', '.join(funds)}. At each month end, a fund's share is")
+    print(f"invested while it closes above its {months}-month average, and held in cash otherwise.\n")
+    print_report(curves, dates, period_cash, split_year or default_split_year(dates))
+    print(f"\nCurrent holdings, from {log[-1][0]:%Y-%m-%d}: {', '.join(log[-1][1]) or 'all cash'}")
 
 
 def run_momentum(universe, top, lookback, skip, years, split_year):
     symbols = SECTOR_FUNDS if universe == "sectors" else load_config()["symbols"]
-    data = {s: fetch_history(s, years) for s in symbols}
-    opens = pd.DataFrame({s: d["Open"] for s, d in data.items()}).sort_index()
-    closes = pd.DataFrame({s: d["Close"] for s, d in data.items()}).sort_index()
+    opens, closes = load_prices(symbols, years)
     cash = cash_rates(closes.index)
 
     dates, momentum, equal, log = momentum_curves(opens, closes, cash, lookback, skip, top)
@@ -206,9 +290,18 @@ def main():
     mom.add_argument("--years", type=int, default=20, help="years of history (default: 20)")
     mom.add_argument("--split-year", type=int, help="year that starts the second period (default: middle)")
 
+    assets = sub.add_parser("asset-trend", help="trend following across stocks, bonds, gold, and commodities")
+    assets.add_argument("--funds", nargs="+", default=ASSET_FUNDS,
+                        help=f"funds to hold, the first is the buy-and-hold comparison (default: {' '.join(ASSET_FUNDS)})")
+    assets.add_argument("--months", type=int, default=10, help="months in the average (default: 10)")
+    assets.add_argument("--years", type=int, default=21, help="years of history (default: 21)")
+    assets.add_argument("--split-year", type=int, help="year that starts the second period (default: middle)")
+
     args = parser.parse_args()
     if args.mode == "market-trend":
         run_market_trend(args.symbol, args.average, args.years, args.split_year)
+    elif args.mode == "asset-trend":
+        run_asset_trend(args.funds, args.months, args.years, args.split_year)
     else:
         run_momentum(args.universe, args.top, args.lookback, args.skip, args.years, args.split_year)
 
