@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import math
+from functools import lru_cache
 
 import pandas as pd
 import yfinance as yf
@@ -37,6 +38,14 @@ VARIANTS = {
 SPLIT_YEAR = 2022  # --compare tests before and from this year separately.
 
 
+# US stock market declines, from the S&P 500's peak close to its lowest close.
+DECLINES = {
+    "2008": ("2007-10-09", "2009-03-09"),
+    "2020": ("2020-02-19", "2020-03-23"),
+    "2022": ("2022-01-03", "2022-10-12"),
+}
+
+
 def max_drawdown(values):
     peak, worst = values[0], 0.0
     for v in values:
@@ -45,16 +54,74 @@ def max_drawdown(values):
     return worst
 
 
-def simulate(ind, opens, config, start, end=None):
-    """Run the strategy from index `start` to `end` (inclusive). Return a dict of results."""
+@lru_cache(maxsize=1)
+def _treasury_bill_rates():
+    """Daily yield of 13-week US Treasury bills, by date. Cash earns this rate in the backtest."""
+    irx = yf.Ticker("^IRX").history(period="max")["Close"]
+    return pd.Series(irx.to_numpy() / 100, index=[d.date() for d in irx.index])
+
+
+def cash_rates(index):
+    """Return the daily interest rate on cash for each date in `index`, as a numpy array."""
+    yearly = _treasury_bill_rates()
+    dates = [d.date() for d in index]
+    aligned = yearly.reindex(sorted(set(yearly.index) | set(dates))).ffill().reindex(dates).fillna(0)
+    return aligned.to_numpy() / TRADING_DAYS_PER_YEAR
+
+
+def sharpe_ratio(curve, cash):
+    """Yearly return above cash, divided by the yearly swings of daily returns."""
+    daily = pd.Series(curve).pct_change().to_numpy()[1:] - cash[1:]
+    std = daily.std()
+    return daily.mean() / std * math.sqrt(TRADING_DAYS_PER_YEAR) if std > 0 else math.nan
+
+
+def decline_returns(curve, dates):
+    """Return {decline name: return during that decline} for declines the curve fully covers."""
+    series = pd.Series(curve, index=[d.date() for d in dates])
+    result = {}
+    for name, (start, end) in DECLINES.items():
+        start, end = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+        if series.index[0] <= start and series.index[-1] >= end:
+            result[name] = series[:end].iloc[-1] / series[:start].iloc[-1] - 1
+        else:
+            result[name] = math.nan
+    return result
+
+
+def curve_stats(curve, dates, cash, start_value=1.0):
+    """CAGR, Sharpe ratio, max drawdown, and decline returns for an equity curve.
+
+    `start_value` is the equity before the first day in `curve`.
+    """
+    years = len(curve) / TRADING_DAYS_PER_YEAR
+    total = curve[-1] / start_value - 1
+    stats = {
+        "cagr": (1 + total) ** (1 / years) - 1 if total > -1 else math.nan,
+        "sharpe": sharpe_ratio([start_value] + list(curve), [0.0] + list(cash)),
+        "drawdown": max_drawdown([start_value] + list(curve)),
+    }
+    for name, ret in decline_returns(curve, dates).items():
+        stats[f"decline_{name}"] = ret
+    return stats
+
+
+def simulate(ind, opens, config, start, end=None, cash=None, daily=False):
+    """Run the strategy from index `start` to `end` (inclusive). Return a dict of results.
+
+    `cash` is the daily interest rate earned while not holding, aligned with `ind`.
+    With daily=True, the result also has "daily": (equity curve, invested flags, buys per day).
+    """
     closes = ind["close"].to_numpy()
     dates = ind.index
     rows = list(ind.itertuples())
     end = len(closes) - 1 if end is None else end
     if end <= start:
         raise ValueError("Not enough price history.")
+    if cash is None:
+        cash = [0.0] * len(closes)
 
-    equity, curve = 1.0, []
+    equity, curve, invested, buys = 1.0, [], [], []
     holding, stopped = False, False
     entry_price = entry_equity = high = entry_date = None
     shares = 0
@@ -65,10 +132,12 @@ def simulate(ind, opens, config, start, end=None):
         if decision_day.bearish:
             stopped = False
         action, reason = decide(decision_day, {"holding": holding, "high": high, "stopped": stopped}, config)
+        bought = 0
 
         if action == "buy":
             shares = buy_quantity(config, decision_day.close)
             if shares > 0:
+                bought = 1
                 holding, stopped = True, False
                 entry_price, entry_equity, high, entry_date = opens[i], equity, opens[i], dates[i]
         elif action == "sell":
@@ -85,7 +154,11 @@ def simulate(ind, opens, config, start, end=None):
             days_in_market += 1
             high = max(high, closes[i])
             equity = entry_equity * closes[i] / entry_price
+        else:
+            equity *= 1 + cash[i]
         curve.append(equity)
+        invested.append(1 if holding else 0)
+        buys.append(bought)
 
     # Value a position that is still open at the last close.
     if holding:
@@ -95,29 +168,36 @@ def simulate(ind, opens, config, start, end=None):
         })
 
     days = end - start + 1
-    years = days / TRADING_DAYS_PER_YEAR
-    buy_hold_curve = closes[start:end + 1] / opens[start]
+    period_dates = dates[start:end + 1]
+    period_cash = list(cash[start:end + 1])
+    buy_hold_curve = list(closes[start:end + 1] / opens[start])
     returns = [t["return"] for t in trades]
+    strategy = curve_stats(curve, period_dates, period_cash)
+    buy_hold = curve_stats(buy_hold_curve, period_dates, period_cash)
 
-    def annualized(total):
-        return (1 + total) ** (1 / years) - 1 if total > -1 else math.nan
-
-    return {
-        "years": years,
+    result = {
+        "years": days / TRADING_DAYS_PER_YEAR,
         "trades": len(trades),
         "win_rate": sum(r > 0 for r in returns) / len(returns) if returns else math.nan,
         "avg_trade": sum(returns) / len(returns) if returns else math.nan,
         "strategy_return": equity - 1,
-        "strategy_cagr": annualized(equity - 1),
+        "strategy_cagr": strategy["cagr"],
         "buy_hold_return": buy_hold_curve[-1] - 1,
-        "buy_hold_cagr": annualized(buy_hold_curve[-1] - 1),
-        "max_drawdown": max_drawdown(curve),
-        "buy_hold_drawdown": max_drawdown(buy_hold_curve),
+        "buy_hold_cagr": buy_hold["cagr"],
+        "max_drawdown": strategy["drawdown"],
+        "buy_hold_drawdown": buy_hold["drawdown"],
+        "sharpe": strategy["sharpe"],
+        "buy_hold_sharpe": buy_hold["sharpe"],
+        **{f"decline_{name}": strategy[f"decline_{name}"] for name in DECLINES},
+        **{f"buy_hold_decline_{name}": buy_hold[f"decline_{name}"] for name in DECLINES},
         "time_in_market": days_in_market / days,
         "open_now": holding,
         "pnl_dollars": sum(t["pnl"] for t in trades),
         "position_cost_now": closes[end] * buy_quantity(config, closes[end]),
     }
+    if daily:
+        result["daily"] = (curve, invested, buys)
+    return result
 
 
 def buy_quantity(config, price):
@@ -172,7 +252,7 @@ def run_single(symbols, config, years):
         try:
             prices = fetch_history(symbol, years)
             ind = compute_indicators(prices["Close"], config)
-            rows[symbol] = simulate(ind, prices["Open"].to_numpy(), config, warmup(config))
+            rows[symbol] = simulate(ind, prices["Open"].to_numpy(), config, warmup(config), cash=cash_rates(prices.index))
         except Exception as e:
             failed[symbol] = str(e)
 
@@ -184,6 +264,11 @@ def run_single(symbols, config, years):
     print(f"Median CAGR: strategy {pct(results.strategy_cagr.median(), 1)}, buy and hold {pct(results.buy_hold_cagr.median(), 1)}")
     print(f"Median max drawdown: strategy {pct(results.max_drawdown.median())}, "
           f"buy and hold {pct(results.buy_hold_drawdown.median())}")
+    print(f"Median Sharpe ratio: strategy {results.sharpe.median():.2f}, buy and hold {results.buy_hold_sharpe.median():.2f}")
+    for name in DECLINES:
+        if results[f"decline_{name}"].notna().any():
+            print(f"Median return in the {name} decline: strategy {pct(results[f'decline_{name}'].median())}, "
+                  f"buy and hold {pct(results[f'buy_hold_decline_{name}'].median())}")
     print(f"Total trades: {results.trades.sum():.0f}, overall win rate "
           f"{pct((results.win_rate * results.trades).sum() / results.trades.sum())}")
     print(f"Total P/L ({size}): ${results.pnl_dollars.sum():,.0f}")
@@ -200,6 +285,8 @@ def run_single(symbols, config, years):
     print("MaxDD = largest drop from a peak, InMkt = time holding the stock, Now = position open today.")
     print("P/L $ = dollar profit. With share sizing, adjusted prices make older trades look cheaper")
     print("after stock splits, so P/L $ is mostly driven by recent years.")
+    print("Cash earns the 13-week Treasury bill rate while the strategy is out of the market.")
+    print("Sharpe ratio = yearly return above cash, divided by yearly price swings. Higher is better.")
 
 
 # ---------- Compare: several variants, three periods ----------
@@ -220,6 +307,7 @@ def run_compare(symbols, base_config, years):
             print(f"Failed: {symbol}: {e}")
             continue
         opens = prices["Open"].to_numpy()
+        cash = cash_rates(prices.index)
         split = int((prices.index.year < SPLIT_YEAR).sum())
         periods = {"Full": (start, None), f"Before {SPLIT_YEAR}": (start, split - 1), f"From {SPLIT_YEAR}": (max(split, start), None)}
         for name, config in configs.items():
@@ -227,7 +315,7 @@ def run_compare(symbols, base_config, years):
             for period, (first, last) in periods.items():
                 try:
                     stats.append({"variant": name, "period": period, "symbol": symbol,
-                                  **simulate(ind, opens, config, first, last)})
+                                  **simulate(ind, opens, config, first, last, cash=cash)})
                 except ValueError:
                     pass  # Symbol has no data in this period, for example PLTR before 2020.
 
@@ -237,22 +325,29 @@ def run_compare(symbols, base_config, years):
         first_variant = part[part.variant == next(iter(configs))]
         print(f"===== {period}: {first_variant.symbol.nunique()} symbols, "
               f"about {first_variant.years.median():.1f} years =====")
-        header = f"{'Variant':20} {'CAGR':>6} {'Beat B&H':>9} {'MaxDD':>6} {'Trades':>7} {'Win':>5} {'InMkt':>6}"
+        declines = [n for n in DECLINES if part[f"decline_{n}"].notna().any()]
+        header = (f"{'Variant':20} {'CAGR':>6} {'Sharpe':>6} {'Beat B&H':>9} {'MaxDD':>6} {'Trades':>7} {'Win':>5} {'InMkt':>6}"
+                  + "".join(f" {n:>6}" for n in declines))
         print(header)
         print("-" * len(header))
         for name in configs:
             v = part[part.variant == name]
             win = (v.win_rate * v.trades).sum() / v.trades.sum() if v.trades.sum() else math.nan
-            print(f"{name:20} {pct(v.strategy_cagr.median(), 1):>6} "
+            print(f"{name:20} {pct(v.strategy_cagr.median(), 1):>6} {v.sharpe.median():>6.2f} "
                   f"{f'{(v.strategy_cagr > v.buy_hold_cagr).sum()}/{len(v)}':>9} "
                   f"{pct(v.max_drawdown.median()):>6} {v.trades.sum():>7.0f} {pct(win):>5} "
-                  f"{pct(v.time_in_market.median()):>6}")
-        print(f"{'Buy and hold':20} {pct(first_variant.buy_hold_cagr.median(), 1):>6} {'':>9} "
-              f"{pct(first_variant.buy_hold_drawdown.median()):>6} {'':>7} {'':>5} {'100%':>6}\n")
+                  f"{pct(v.time_in_market.median()):>6}"
+                  + "".join(f" {pct(v[f'decline_{n}'].median()):>6}" for n in declines))
+        b = first_variant
+        print(f"{'Buy and hold':20} {pct(b.buy_hold_cagr.median(), 1):>6} {b.buy_hold_sharpe.median():>6.2f} {'':>9} "
+              f"{pct(b.buy_hold_drawdown.median()):>6} {'':>7} {'':>5} {'100%':>6}"
+              + "".join(f" {pct(b[f'buy_hold_decline_{n}'].median()):>6}" for n in declines) + "\n")
 
     print("All figures are medians across symbols, except Beat B&H (symbols where the variant's yearly")
-    print("return beat buy and hold) and Trades (total). A variant that only does well in one period")
-    print("is likely fit to that period. Past results do not predict future results.")
+    print("return beat buy and hold) and Trades (total). Year columns show the return during that")
+    print("market decline. Cash earns the 13-week Treasury bill rate while out of the market.")
+    print("A variant that only does well in one period is likely fit to that period.")
+    print("Past results do not predict future results.")
 
 
 def main():
