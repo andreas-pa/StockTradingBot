@@ -221,7 +221,10 @@ Start the scheduled service with Telegram:
 .venv/bin/python backtest.py --years 5    # a different period
 .venv/bin/python backtest.py AAPL MSFT    # only these symbols
 .venv/bin/python backtest.py --compare    # compare strategy variants
+.venv/bin/python backtest.py --fill close # trade at the same day's close instead of the next open
 ```
+
+By default, trades fill at the next day's open, like the live bot's 9:30 run. `--fill close` decides on a day's close and fills at that same close, which estimates a run shortly before 16:00 ET. It works with `--compare` too.
 
 For each symbol it reports the number of trades, win rate, average trade return, the strategy's total and yearly return, buy-and-hold return for comparison, maximum drawdown, time in the market, and dollar profit and loss. It also saves the full results to `backtest_results.csv`.
 

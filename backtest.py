@@ -12,6 +12,7 @@ Usage:
     python backtest.py --years 5       # a different period
     python backtest.py AAPL MSFT       # only these symbols
     python backtest.py --compare       # compare strategy variants over three periods
+    python backtest.py --fill close    # trade at the same day's close instead of the next open
 """
 
 import argparse
@@ -39,6 +40,7 @@ VARIANTS = {
     "State + filter + exit": {"entry_mode": "state", "market_filter_average": 200, "market_filter_exit": True},
 }
 SPLIT_YEAR = 2022  # --compare tests before and from this year separately.
+FILL_NAMES = {"open": "next open", "close": "same-day close"}
 
 
 # US stock market declines, from the S&P 500's peak close to its lowest close.
@@ -109,11 +111,13 @@ def curve_stats(curve, dates, cash, start_value=1.0):
     return stats
 
 
-def simulate(ind, opens, config, start, end=None, cash=None, daily=False):
+def simulate(ind, opens, config, start, end=None, cash=None, daily=False, fill="open"):
     """Run the strategy from index `start` to `end` (inclusive). Return a dict of results.
 
     `cash` is the daily interest rate earned while not holding, aligned with `ind`.
     With daily=True, the result also has "daily": (equity curve, invested flags, buys per day).
+    fill="open" trades at the next day's open, like the live bot's 9:30 run. fill="close"
+    trades at the same day's close, like a run just before the market closes.
     """
     closes = ind["close"].to_numpy()
     dates = ind.index
@@ -130,34 +134,44 @@ def simulate(ind, opens, config, start, end=None, cash=None, daily=False):
     shares = 0
     trades, days_in_market = [], 0
 
+    at_close = fill == "close"
     for i in range(start, end + 1):
-        decision_day = rows[i - 1]  # Decided on yesterday's close, executed at today's open.
+        if at_close:
+            # Decided on today's close and filled at that close, like a run just before 16:00.
+            decision_day, price = rows[i], closes[i]
+        else:
+            # Decided on yesterday's close and filled at today's open, like the 9:30 run.
+            decision_day, price = rows[i - 1], opens[i]
         if decision_day.bearish:
             stopped = False
         action, reason = decide(decision_day, {"holding": holding, "high": high, "stopped": stopped}, config)
         bought = 0
+        sold_at_close = False
 
         if action == "buy":
             shares = buy_quantity(config, decision_day.close)
             if shares > 0:
                 bought = 1
+                if at_close:
+                    equity *= 1 + cash[i]  # The cash earned interest for the day before the buy.
                 holding, stopped = True, False
-                entry_price, entry_equity, high, entry_date = opens[i], equity, opens[i], dates[i]
+                entry_price, entry_equity, high, entry_date = price, equity, price, dates[i]
         elif action == "sell":
-            trade_return = opens[i] / entry_price - 1
+            trade_return = price / entry_price - 1
             trades.append({
                 "entry": entry_date, "exit": dates[i], "return": trade_return,
-                "pnl": (opens[i] - entry_price) * shares, "reason": reason,
+                "pnl": (price - entry_price) * shares, "reason": reason,
             })
             equity = entry_equity * (1 + trade_return)
             holding = False
             stopped = reason.startswith("trailing stop")
+            sold_at_close = at_close
 
         if holding:
             days_in_market += 1
             high = max(high, closes[i])
             equity = entry_equity * closes[i] / entry_price
-        else:
+        elif not sold_at_close:
             equity *= 1 + cash[i]
         curve.append(equity)
         invested.append(1 if holding else 0)
@@ -254,9 +268,9 @@ def print_table(results):
         )
 
 
-def run_single(symbols, config, years):
+def run_single(symbols, config, years, fill="open"):
     size = f"${config['trade_dollars']:,} per trade" if config["sizing"] == "dollars" else f"{config['trade_size']} shares per trade"
-    print(f"Backtesting {len(symbols)} symbols, last {years} years")
+    print(f"Backtesting {len(symbols)} symbols, last {years} years, trading at the {FILL_NAMES[fill]}")
     print(f"{config['short_window']}/{config['long_window']}-day, {config['entry_mode']} mode, "
           f"confirm {config['confirm_days']}, gap {config['min_gap_pct']:g}%, "
           f"trailing stop {config['trailing_stop_pct']:g}%, {size}\n")
@@ -267,7 +281,7 @@ def run_single(symbols, config, years):
         try:
             prices = fetch_history(symbol, years)
             ind = compute_indicators(prices["Close"], config, market)
-            rows[symbol] = simulate(ind, prices["Open"].to_numpy(), config, warmup(config), cash=cash_rates(prices.index))
+            rows[symbol] = simulate(ind, prices["Open"].to_numpy(), config, warmup(config), cash=cash_rates(prices.index), fill=fill)
         except Exception as e:
             failed[symbol] = str(e)
 
@@ -306,14 +320,14 @@ def run_single(symbols, config, years):
 
 # ---------- Compare: several variants, three periods ----------
 
-def run_compare(symbols, base_config, years):
+def run_compare(symbols, base_config, years, fill="open"):
     configs = {name: validate({**base_config, **changes}) for name, changes in VARIANTS.items()}
     # Start every variant on the same day, so all of them cover the same period.
     start = max(warmup(c) for c in configs.values())
 
     market = market_history(configs.values(), years)
 
-    print(f"Comparing {len(configs)} variants on {len(symbols)} symbols, last {years} years.")
+    print(f"Comparing {len(configs)} variants on {len(symbols)} symbols, last {years} years, trading at the {FILL_NAMES[fill]}.")
     print(f"Each variant changes settings of config.yaml. Periods: full, before {SPLIT_YEAR}, from {SPLIT_YEAR}.\n")
 
     stats = []  # One row per (variant, period, symbol).
@@ -332,7 +346,7 @@ def run_compare(symbols, base_config, years):
             for period, (first, last) in periods.items():
                 try:
                     stats.append({"variant": name, "period": period, "symbol": symbol,
-                                  **simulate(ind, opens, config, first, last, cash=cash)})
+                                  **simulate(ind, opens, config, first, last, cash=cash, fill=fill)})
                 except ValueError:
                     pass  # Symbol has no data in this period, for example PLTR before 2020.
 
@@ -372,14 +386,16 @@ def main():
     parser.add_argument("symbols", nargs="*", help="symbols to test (default: all in config.yaml)")
     parser.add_argument("--years", type=int, default=10, help="years of history (default: 10)")
     parser.add_argument("--compare", action="store_true", help="compare strategy variants over three periods")
+    parser.add_argument("--fill", choices=["open", "close"], default="open",
+                        help="open: trade at the next open, like the 9:30 run (default). close: trade at the same close")
     args = parser.parse_args()
 
     config = load_config()
     symbols = args.symbols or config["symbols"]
     if args.compare:
-        run_compare(symbols, config, args.years)
+        run_compare(symbols, config, args.years, args.fill)
     else:
-        run_single(symbols, config, args.years)
+        run_single(symbols, config, args.years, args.fill)
 
 
 if __name__ == "__main__":
