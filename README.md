@@ -14,7 +14,7 @@ The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run 
    - **No signal** when the averages did not cross.
 4. On a signal, it places a market order on Alpaca. A sell closes the whole position.
 
-Optional settings change these rules: hold whenever the trend is up instead of only on crossover days, wait for confirmation, require a minimum gap, add a trailing stop, or size orders in dollars. See [Strategy options](#strategy-options).
+Optional settings change these rules: hold whenever the trend is up instead of only on crossover days, wait for confirmation, require a minimum gap, add a trailing stop, pause buying while the whole market is in a downtrend, or size orders in dollars. See [Strategy options](#strategy-options).
 
 The bot ignores today's unfinished price bar while the market is open. At the 9:30 run, signals therefore come from the previous day's close, and orders fill near the opening price.
 
@@ -72,8 +72,11 @@ All options default to the original strategy. Change one at a time, and test it 
 | `min_gap_pct` | `0` (default) or more | A signal counts only when the averages differ by at least this percentage |
 | `trailing_stop_pct` | `0` (default, off) or more | Sells when a close falls this percentage below the highest close since the buy. After a stop, the bot waits for a fresh crossover before buying that stock again. |
 | `sizing` | `shares` (default), `dollars` | Buy `trade_size` shares, or as many whole shares as `trade_dollars` allows |
+| `market_filter_average` | `0` (default, off), or a number of days such as `200` | Blocks new buys while `market_filter_symbol` closes at or below its average over this many days |
+| `market_filter_symbol` | `SPY` (default) | The fund that measures the market's trend |
+| `market_filter_exit` | `false` (default), `true` | With the market filter on, also sells every position while the market fund is below its average |
 
-The trailing stop memory is kept in `logs/strategy_state.json`. Longer averages need more history: set `history_days` above `long_window + confirm_days`, for example 250 for a 200-day average.
+These options are not in the default `config.yaml`. Add a line, for example `market_filter_average: 200`, to use one. The trailing stop memory is kept in `logs/strategy_state.json`. Longer averages need more history: set `history_days` above `long_window + confirm_days`, for example 250 for a 200-day average.
 
 ## Requirements
 
@@ -224,7 +227,7 @@ For each symbol it reports the number of trades, win rate, average trade return,
 
 While the strategy is out of the market, its cash earns the 13-week US Treasury bill rate, from Yahoo Finance symbol `^IRX`. The summary also shows the Sharpe ratio, which is the yearly return above cash divided by the yearly price swings, and the return during the 2008, 2020, and 2022 market declines that the period covers.
 
-`--compare` tests variants that each change one setting of `config.yaml`: state mode, 50/200-day averages, 2-day confirmation, a 1% minimum gap, and a 15% trailing stop. It runs each one over the full period, before 2022, and from 2022, and compares them with buy and hold. A variant that only does well in one period is probably fit to that period.
+`--compare` tests variants that change settings of `config.yaml`: state mode, 50/200-day averages, 2-day confirmation, a 1% minimum gap, a 15% trailing stop, and a 200-day SPY market filter, with and without exits and combined with state mode. It runs each one over the full period, before 2022, and from 2022, and compares them with buy and hold. A variant that only does well in one period is probably fit to that period.
 
 Past results do not predict future results. A list of today's largest companies also flatters any backtest, because it leaves out companies that shrank or failed over the same years.
 

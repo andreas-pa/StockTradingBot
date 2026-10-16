@@ -84,6 +84,7 @@ def run_market_trend(symbol, average, years, split_year):
     config = validate({
         **load_config(), "short_window": 1, "long_window": average, "entry_mode": "state",
         "confirm_days": 1, "min_gap_pct": 0, "trailing_stop_pct": 0, "sizing": "shares",
+        "market_filter_average": 0,
     })
     prices = fetch_history(symbol, years)
     cash = cash_rates(prices.index)

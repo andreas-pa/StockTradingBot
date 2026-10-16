@@ -21,7 +21,7 @@ from functools import lru_cache
 import pandas as pd
 import yfinance as yf
 
-from strategy import BASE_DIR, compute_indicators, decide, load_config, validate
+from strategy import BASE_DIR, compute_indicators, decide, load_config, market_filter_on, validate
 
 RESULTS_FILE = BASE_DIR / "backtest_results.csv"
 TRADING_DAYS_PER_YEAR = 252
@@ -34,6 +34,9 @@ VARIANTS = {
     "Confirm 2 days": {"confirm_days": 2},
     "Min gap 1%": {"min_gap_pct": 1},
     "Trailing stop 15%": {"trailing_stop_pct": 15},
+    "Market filter": {"market_filter_average": 200},
+    "Market filter + exit": {"market_filter_average": 200, "market_filter_exit": True},
+    "State + filter + exit": {"entry_mode": "state", "market_filter_average": 200, "market_filter_exit": True},
 }
 SPLIT_YEAR = 2022  # --compare tests before and from this year separately.
 
@@ -208,7 +211,18 @@ def buy_quantity(config, price):
 
 def warmup(config):
     """First index where a signal can be executed."""
-    return config["long_window"] + config["confirm_days"]
+    days = config["long_window"] + config["confirm_days"]
+    if market_filter_on(config):
+        days = max(days, config["market_filter_average"] + 1)
+    return days
+
+
+def market_history(configs, years):
+    """Closing prices of the market filter fund, or None if no config uses the filter."""
+    symbols = {c["market_filter_symbol"] for c in configs if market_filter_on(c)}
+    if len(symbols) > 1:
+        raise ValueError("All variants must use the same market_filter_symbol.")
+    return fetch_history(symbols.pop(), years)["Close"] if symbols else None
 
 
 def fetch_history(symbol, years):
@@ -247,11 +261,12 @@ def run_single(symbols, config, years):
           f"confirm {config['confirm_days']}, gap {config['min_gap_pct']:g}%, "
           f"trailing stop {config['trailing_stop_pct']:g}%, {size}\n")
 
+    market = market_history([config], years)
     rows, failed = {}, {}
     for symbol in symbols:
         try:
             prices = fetch_history(symbol, years)
-            ind = compute_indicators(prices["Close"], config)
+            ind = compute_indicators(prices["Close"], config, market)
             rows[symbol] = simulate(ind, prices["Open"].to_numpy(), config, warmup(config), cash=cash_rates(prices.index))
         except Exception as e:
             failed[symbol] = str(e)
@@ -296,8 +311,10 @@ def run_compare(symbols, base_config, years):
     # Start every variant on the same day, so all of them cover the same period.
     start = max(warmup(c) for c in configs.values())
 
+    market = market_history(configs.values(), years)
+
     print(f"Comparing {len(configs)} variants on {len(symbols)} symbols, last {years} years.")
-    print(f"Each variant changes one setting of config.yaml. Periods: full, before {SPLIT_YEAR}, from {SPLIT_YEAR}.\n")
+    print(f"Each variant changes settings of config.yaml. Periods: full, before {SPLIT_YEAR}, from {SPLIT_YEAR}.\n")
 
     stats = []  # One row per (variant, period, symbol).
     for symbol in symbols:
@@ -311,7 +328,7 @@ def run_compare(symbols, base_config, years):
         split = int((prices.index.year < SPLIT_YEAR).sum())
         periods = {"Full": (start, None), f"Before {SPLIT_YEAR}": (start, split - 1), f"From {SPLIT_YEAR}": (max(split, start), None)}
         for name, config in configs.items():
-            ind = compute_indicators(prices["Close"], config)
+            ind = compute_indicators(prices["Close"], config, market)
             for period, (first, last) in periods.items():
                 try:
                     stats.append({"variant": name, "period": period, "symbol": symbol,

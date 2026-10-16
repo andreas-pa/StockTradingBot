@@ -71,6 +71,21 @@ def _connect(dry_run):
         return None, {}, set()
 
 
+def _market_closes(config):
+    """Download the market fund's prices when the market filter is on, and log its trend."""
+    if not strategy.market_filter_on(config):
+        return None
+    symbol, average = config["market_filter_symbol"], config["market_filter_average"]
+    closes = strategy.fetch_prices(symbol, average + 30)
+    mean = closes.tail(average).mean()
+    trend = "above" if closes.iloc[-1] > mean else "at or below"
+    action = "exits all positions" if config["market_filter_exit"] else "blocks new buys"
+    log.info(f"Market filter: {symbol} closed at {closes.iloc[-1]:.2f}, {trend} its {average}-day average of {mean:.2f}.")
+    if trend != "above":
+        log.info(f"Market filter {action} while {symbol} is below its average.")
+    return closes
+
+
 def _high_since_buy(client, symbol, held, ind):
     """Return the highest close since the position was bought, including the buy price."""
     high = held["entry"]
@@ -130,16 +145,20 @@ def _run(dry_run):
         log.info(
             f"Strategy: {config['short_window']}/{config['long_window']}-day, {config['entry_mode']} mode, "
             f"confirm {config['confirm_days']} day(s), gap {config['min_gap_pct']:g}%, "
-            f"trailing stop {config['trailing_stop_pct']:g}%, sizing by {config['sizing']}"
+            f"trailing stop {config['trailing_stop_pct']:g}%, sizing by {config['sizing']}, "
+            + (f"market filter {config['market_filter_symbol']} {config['market_filter_average']}-day"
+               f"{' with exit' if config['market_filter_exit'] else ''}"
+               if strategy.market_filter_on(config) else "market filter off")
         )
         client, positions, pending = _connect(dry_run)
         stopped = _load_stopped()
+        market_closes = _market_closes(config)
 
         for symbol in config["symbols"]:
             log.info(f"----- {symbol} -----")
             try:
                 closes = strategy.fetch_prices(symbol, config["history_days"])
-                ind = strategy.compute_indicators(closes, config)
+                ind = strategy.compute_indicators(closes, config, market_closes)
                 strategy.log_indicators(ind, config)
 
                 held = positions.get(symbol)

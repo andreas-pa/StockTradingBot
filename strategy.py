@@ -22,6 +22,9 @@ DEFAULTS = {
     "trailing_stop_pct": 0.0,
     "sizing": "shares",
     "trade_dollars": 1000,
+    "market_filter_average": 0,
+    "market_filter_symbol": "SPY",
+    "market_filter_exit": False,
 }
 
 
@@ -38,7 +41,25 @@ def validate(config):
         raise ValueError("Config error: min_gap_pct and trailing_stop_pct cannot be negative.")
     if config["sizing"] not in ("shares", "dollars"):
         raise ValueError("Config error: sizing must be 'shares' or 'dollars'.")
+    if config["market_filter_average"] == 1 or config["market_filter_average"] < 0:
+        raise ValueError("Config error: market_filter_average must be 0 (off) or 2 or more.")
     return config
+
+
+def market_filter_on(config):
+    return config["market_filter_average"] > 0
+
+
+def market_trend(market_closes, config, index):
+    """Return a boolean Series over `index`: True where the market fund closed above its average.
+
+    Days before the average can be computed count as False, so no buys happen then.
+    """
+    above = market_closes > market_closes.rolling(config["market_filter_average"]).mean()
+    by_date = pd.Series(above.to_numpy(), index=[d.date() for d in market_closes.index])
+    dates = [d.date() for d in index]
+    aligned = by_date.reindex(sorted(set(by_date.index) | set(dates))).ffill().reindex(dates)
+    return pd.Series(aligned.fillna(False).astype(bool).to_numpy(), index=index)
 
 
 def load_config(path=BASE_DIR / "config.yaml"):
@@ -71,11 +92,13 @@ def fetch_prices(symbol, history_days):
     return closes
 
 
-def compute_indicators(closes, config):
+def compute_indicators(closes, config, market_closes=None):
     """Return a DataFrame with the moving averages and trend signals for each day.
 
     bullish / bearish: the trend condition has held for confirm_days days in a row.
     buy_event / sell_event: the first day of a new bullish or bearish period.
+    market_ok: the market fund closed above its average, or the market filter is off.
+    `market_closes` is needed only when the market filter is on.
     """
     short_ma = closes.rolling(config["short_window"]).mean()
     long_ma = closes.rolling(config["long_window"]).mean()
@@ -90,7 +113,14 @@ def compute_indicators(closes, config):
     # An event needs the day before it to be fully computable, so the first
     # usable day never counts as a crossover.
     known_before = long_ma.shift(days).notna()
+    if market_filter_on(config):
+        if market_closes is None:
+            raise ValueError("The market filter is on, but no market prices were given.")
+        market_ok = market_trend(market_closes, config, closes.index)
+    else:
+        market_ok = pd.Series(True, index=closes.index)
     return pd.DataFrame({
+        "market_ok": market_ok,
         "close": closes,
         "short_ma": short_ma,
         "long_ma": long_ma,
@@ -112,10 +142,13 @@ def decide(day, position, config):
                   fresh crossover, so the bot does not buy straight back.
     Returns (action, reason) where action is "buy", "sell", or None.
     """
+    market = f"{config['market_filter_symbol']} below its {config['market_filter_average']}-day average"
     if position["holding"]:
         stop = config["trailing_stop_pct"] / 100
         if stop and day.close <= position["high"] * (1 - stop):
             return "sell", f"trailing stop, {config['trailing_stop_pct']:g}% below the high of {position['high']:.2f}"
+        if config["market_filter_exit"] and not day.market_ok:
+            return "sell", market
         if config["entry_mode"] == "state" and day.bearish:
             return "sell", "short average below long average"
         if config["entry_mode"] == "crossover" and day.sell_event:
@@ -123,10 +156,14 @@ def decide(day, position, config):
         return None, "holding"
 
     if config["entry_mode"] == "crossover":
-        if day.buy_event:
-            return "buy", "crossover up"
-    elif day.bullish and (not position["stopped"] or day.buy_event):
-        return "buy", "crossover up" if day.buy_event else "short average above long average"
+        wants_buy, reason = day.buy_event, "crossover up"
+    else:
+        wants_buy = day.bullish and (not position["stopped"] or day.buy_event)
+        reason = "crossover up" if day.buy_event else "short average above long average"
+    if wants_buy and not day.market_ok:
+        return None, f"buy blocked, {market}"
+    if wants_buy:
+        return "buy", reason
     return None, "no signal"
 
 
