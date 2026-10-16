@@ -34,6 +34,7 @@ The bot ignores today's unfinished price bar while the market is open. At the 9:
 | `config.yaml` | Symbols, strategy settings, order size, history length |
 | `strategy.py` | Loads the config, downloads prices, and holds the trading rules shared by the bot and the backtest |
 | `backtest.py` | Replays the strategy on past prices and compares variants |
+| `research.py` | Backtests two alternative strategies: a market trend rule and momentum |
 | `trader.py` | Connects to Alpaca, places orders, reads the account |
 | `bot.py` | Runs one check of all symbols. Also works from the command line. |
 | `main.py` | Docker service: daily schedule, Telegram commands, alerts, and daily status |
@@ -221,9 +222,27 @@ Start the scheduled service with Telegram:
 
 For each symbol it reports the number of trades, win rate, average trade return, the strategy's total and yearly return, buy-and-hold return for comparison, maximum drawdown, time in the market, and dollar profit and loss. It also saves the full results to `backtest_results.csv`.
 
+While the strategy is out of the market, its cash earns the 13-week US Treasury bill rate, from Yahoo Finance symbol `^IRX`. The summary also shows the Sharpe ratio, which is the yearly return above cash divided by the yearly price swings, and the return during the 2008, 2020, and 2022 market declines that the period covers.
+
 `--compare` tests variants that each change one setting of `config.yaml`: state mode, 50/200-day averages, 2-day confirmation, a 1% minimum gap, and a 15% trailing stop. It runs each one over the full period, before 2022, and from 2022, and compares them with buy and hold. A variant that only does well in one period is probably fit to that period.
 
 Past results do not predict future results. A list of today's largest companies also flatters any backtest, because it leaves out companies that shrank or failed over the same years.
+
+### Alternative strategies
+
+`research.py` tests two other kinds of strategy, measured the same way: cash interest, Sharpe ratio, drawdown, declines, and an early and a late period. The live bot does not use them.
+
+```bash
+.venv/bin/python research.py market-trend             # SPY, 200-day average, 20 years
+.venv/bin/python research.py market-trend --symbol QQQ --average 150
+.venv/bin/python research.py momentum                 # nine sector funds, top 3, 20 years
+.venv/bin/python research.py momentum --universe config --top 5 --years 10
+```
+
+- **Market trend** holds one index fund while it closes above its long-term average, and holds cash otherwise. It uses the live bot's rule code, with a 1-day short average in state mode.
+- **Momentum** ranks a list of symbols at the end of each month by their return over the past 12 months, skipping the most recent month. It holds the top few in equal amounts until the next month. The comparison is an equal amount in every symbol, rebalanced monthly.
+
+The default momentum universe is nine S&P 500 sector funds that have traded since 1998. Their list is the same in every year, so the test avoids the hindsight bias of using today's largest companies. Add `--split-year` to choose where the second period starts.
 
 ## Disclaimer
 
