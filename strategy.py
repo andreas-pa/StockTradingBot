@@ -149,10 +149,10 @@ def decide(day, position, config):
             return "sell", f"trailing stop, {config['trailing_stop_pct']:g}% below the high of {position['high']:.2f}"
         if config["market_filter_exit"] and not day.market_ok:
             return "sell", market
-        if config["entry_mode"] == "state" and day.bearish:
-            return "sell", "short average below long average"
-        if config["entry_mode"] == "crossover" and day.sell_event:
-            return "sell", "crossover down"
+        # Sells in both modes whenever the trend is down, so a missed crossover
+        # day does not leave the position open through the whole downtrend.
+        if day.bearish:
+            return "sell", "crossover down" if day.sell_event else "short average below long average"
         return None, "holding"
 
     if config["entry_mode"] == "crossover":
