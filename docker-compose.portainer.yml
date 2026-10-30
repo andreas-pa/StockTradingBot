@@ -1,0 +1,16 @@
+services:
+  tradingbot:
+    build: .
+    image: tradingbot:latest
+    container_name: tradingbot
+    restart: unless-stopped
+    # Portainer writes the stack's environment variables to this file.
+    # Add the API keys and Telegram settings in the stack editor, never in git.
+    env_file: stack.env
+    volumes:
+      # A named volume keeps the logs and strategy_state.json across redeploys.
+      # config.yaml is copied into the image, so config changes go through git.
+      - tradingbot-logs:/app/logs
+
+volumes:
+  tradingbot-logs:
