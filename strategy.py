@@ -140,6 +140,8 @@ def decide(day, position, config):
         stopped:  True if the last exit was a trailing stop and no bearish
                   period has followed yet. Blocks state-mode re-entry until a
                   fresh crossover, so the bot does not buy straight back.
+        missed_buy: optional. True if a crossover up happened on a day the bot
+                  did not check. See missed_buy().
     Returns (action, reason) where action is "buy", "sell", or None.
     """
     market = f"{config['market_filter_symbol']} below its {config['market_filter_average']}-day average"
@@ -156,7 +158,10 @@ def decide(day, position, config):
         return None, "holding"
 
     if config["entry_mode"] == "crossover":
-        wants_buy, reason = day.buy_event, "crossover up"
+        # A crossover up on a missed day still counts while the trend is up.
+        caught_up = position.get("missed_buy", False) and day.bullish
+        wants_buy = day.buy_event or caught_up
+        reason = "crossover up" if day.buy_event else "crossover up on a missed day"
     else:
         wants_buy = day.bullish and (not position["stopped"] or day.buy_event)
         reason = "crossover up" if day.buy_event else "short average above long average"
@@ -165,6 +170,20 @@ def decide(day, position, config):
     if wants_buy:
         return "buy", reason
     return None, "no signal"
+
+
+def missed_buy(ind, last_checked):
+    """Return True if a crossover up that allowed a buy happened on a day the bot did not check.
+
+    `last_checked` is the date of the last day the bot decided on, or None if unknown.
+    The last row of `ind` is the day being decided now, so it does not count as missed.
+    A crossover on a day the market filter blocked buys does not count either.
+    """
+    if last_checked is None:
+        return False
+    earlier = ind.iloc[:-1]
+    missed = earlier[[d.date() > last_checked for d in earlier.index]]
+    return bool((missed.buy_event & missed.market_ok).any())
 
 
 def log_indicators(ind, config):

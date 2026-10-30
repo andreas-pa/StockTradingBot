@@ -13,7 +13,7 @@ import logging
 import os
 import sys
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -103,16 +103,24 @@ def _buy_quantity(config, price):
     return float(config["trade_size"])
 
 
-def _load_stopped():
-    """Symbols whose last exit was a trailing stop. Kept between runs in logs/strategy_state.json."""
+def _load_state():
+    """Return (stopped, checked). Kept between runs in logs/strategy_state.json.
+
+    stopped: symbols whose last exit was a trailing stop.
+    checked: {symbol: date of the last day the bot decided on}, to find missed crossovers.
+    """
     try:
-        return set(json.loads(STATE_FILE.read_text())["stopped"])
-    except (FileNotFoundError, KeyError, ValueError):
-        return set()
+        state = json.loads(STATE_FILE.read_text())
+    except (FileNotFoundError, ValueError):
+        state = {}
+    stopped = set(state.get("stopped", []))
+    checked = {s: date.fromisoformat(d) for s, d in state.get("checked", {}).items()}
+    return stopped, checked
 
 
-def _save_stopped(stopped):
-    STATE_FILE.write_text(json.dumps({"stopped": sorted(stopped)}, indent=2))
+def _save_state(stopped, checked):
+    state = {"stopped": sorted(stopped), "checked": {s: d.isoformat() for s, d in sorted(checked.items())}}
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
 def run_once(dry_run=False):
@@ -151,7 +159,7 @@ def _run(dry_run):
                if strategy.market_filter_on(config) else "market filter off")
         )
         client, positions, pending = _connect(dry_run)
-        stopped = _load_stopped()
+        stopped, checked = _load_state()
         market_closes = _market_closes(config)
 
         for symbol in config["symbols"]:
@@ -166,6 +174,7 @@ def _run(dry_run):
                     "holding": bool(held),
                     "high": _high_since_buy(client, symbol, held, ind) if held else None,
                     "stopped": symbol in stopped,
+                    "missed_buy": strategy.missed_buy(ind, checked.get(symbol)),
                 }
                 today = ind.iloc[-1]
                 if today.bearish:
@@ -177,9 +186,13 @@ def _run(dry_run):
                 summary["errors"].append(f"{symbol}: {e}")
                 continue
 
+            # The day counts as checked once it is handled. After an error, an open
+            # order, or a failed order, the next run looks at it again.
+            decided_on = ind.index[-1].date()
             if action is None:
                 log.info(reason.capitalize() + ".")
                 summary["results"][symbol] = reason
+                checked[symbol] = decided_on
                 continue
 
             log.info(f"{action.upper()} signal: {reason}.")
@@ -193,6 +206,7 @@ def _run(dry_run):
             if qty <= 0:
                 log.info(f"trade_dollars is below one share at {today.close:.2f}. Skipping.")
                 summary["results"][symbol] += ", too expensive for trade_dollars"
+                checked[symbol] = decided_on
                 continue
             if dry_run:
                 log.info(f"Dry run. Would {action} {qty:g} shares. No order placed.")
@@ -200,6 +214,7 @@ def _run(dry_run):
 
             try:
                 summary["orders"].append(trader.place_order(client, symbol, action, qty))
+                checked[symbol] = decided_on
                 if action == "sell" and reason.startswith("trailing stop"):
                     stopped.add(symbol)
                 elif action == "buy":
@@ -210,7 +225,7 @@ def _run(dry_run):
                 summary["errors"].append(f"{symbol} order failed: {e}")
 
         if not dry_run:
-            _save_stopped(stopped)
+            _save_state(stopped, checked)
     except Exception as e:
         log.exception(f"Run failed: {e}")
         summary["errors"].append(f"Run failed: {e}")

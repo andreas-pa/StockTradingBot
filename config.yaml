@@ -28,7 +28,8 @@ short_window: 20
 long_window: 50
 
 # When to buy and sell:
-#   crossover - buy only on the day the short average crosses above the long one.
+#   crossover - buy on the day the short average crosses above the long one, or at
+#               the next run after a missed crossover day while it is still above.
 #               Sell at the next run while it is below, so missed days are caught up.
 #   state     - hold whenever the short average is above the long one. Buys at the
 #               next run if not holding, so missed days are caught up.

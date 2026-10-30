@@ -9,7 +9,7 @@ The bot runs in Docker every weekday at 9:30 AM Eastern time. It logs every run 
 1. The bot downloads the last 100 trading days of daily closing prices for each symbol from Yahoo Finance, using `yfinance`.
 2. It calculates a 20-day and a 50-day simple moving average.
 3. With the default settings, it compares the last two completed trading days:
-   - **BUY** when the 20-day average was at or below the 50-day average on the first day and above it on the second day.
+   - **BUY** when the 20-day average was at or below the 50-day average on the first day and above it on the second day. If the bot missed the run after a crossover up, it buys at the next run while the 20-day average is still above. The bot remembers the last day it checked in `logs/strategy_state.json`. On its first run it has no record, so it does not catch up.
    - **SELL** when the bot holds the stock and the 20-day average is below the 50-day average on the second day. This is usually the crossover day, but the bot also sells on later days, so a missed run does not keep the position open through a downtrend.
    - **No signal** otherwise.
 4. On a signal, it places a market order on Alpaca. A sell closes the whole position.
@@ -67,7 +67,7 @@ All options default to the original strategy. Change one at a time, and test it 
 
 | Setting | Values | Effect |
 |---|---|---|
-| `entry_mode` | `crossover` (default), `state` | `crossover` buys only on crossover days. Both modes sell whenever the short average is below the long one. `state` holds whenever the short average is above the long one, so the bot catches up after missed days. Switching to `state` buys every symbol in an uptrend at the next run. |
+| `entry_mode` | `crossover` (default), `state` | `crossover` buys only on crossover days, or at the next run after a missed crossover day. Both modes sell whenever the short average is below the long one. `state` holds whenever the short average is above the long one, so the bot catches up after missed days. Switching to `state` buys every symbol in an uptrend at the next run. |
 | `confirm_days` | `1` (default) or more | A signal counts only after it has held this many days in a row |
 | `min_gap_pct` | `0` (default) or more | A signal counts only when the averages differ by at least this percentage |
 | `trailing_stop_pct` | `0` (default, off) or more | Sells when a close falls this percentage below the highest close since the buy. After a stop, the bot waits for a fresh crossover before buying that stock again. |
@@ -175,7 +175,7 @@ Docker writes logs to the `logs/` folder on the host. Log times are in Eastern t
 | `logs/runs/YYYY-MM-DD.log` | Everything one scheduled run did |
 | `logs/bot.log` | All activity, including dry runs and errors. Rotates at 5 MB. |
 | `logs/last_run.json` | Result of the last scheduled run, used by `/last` |
-| `logs/strategy_state.json` | Symbols sold by a trailing stop, so the bot does not buy them straight back |
+| `logs/strategy_state.json` | Symbols sold by a trailing stop, so the bot does not buy them straight back, and the last day the bot checked each symbol, so it can catch up missed crossovers |
 
 To follow the container output live:
 
